@@ -136,15 +136,22 @@ jobs:
             echo "  Artifact directory contents:"
             find ./deploy-artifacts -type f | head -20
 
-            # Move .env.prod.local if exists
-            if [ -f "./deploy-artifacts/backend/.env.prod.local" ]; then
-              cp ./deploy-artifacts/backend/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.prod.local
-              echo "✓ Copied .env.prod.local from backend/"
+            # Move .env.local if exists (preferred for Symfony)
+            if [ -f "./deploy-artifacts/backend/.env.local" ]; then
+              cp ./deploy-artifacts/backend/.env.local ${{ steps.config.outputs.backend-path }}/.env.local
+              echo "✓ Copied .env.local from backend/"
+            elif [ -f "./deploy-artifacts/.env.local" ]; then
+              cp ./deploy-artifacts/.env.local ${{ steps.config.outputs.backend-path }}/.env.local
+              echo "✓ Copied .env.local from root"
+            # Fallback to .env.prod.local for backwards compatibility
+            elif [ -f "./deploy-artifacts/backend/.env.prod.local" ]; then
+              cp ./deploy-artifacts/backend/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.local
+              echo "✓ Copied .env.prod.local as .env.local from backend/"
             elif [ -f "./deploy-artifacts/.env.prod.local" ]; then
-              cp ./deploy-artifacts/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.prod.local
-              echo "✓ Copied .env.prod.local from root"
+              cp ./deploy-artifacts/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.local
+              echo "✓ Copied .env.prod.local as .env.local from root"
             else
-              echo "⚠ No .env.prod.local found in artifacts"
+              echo "⚠ No .env.local or .env.prod.local found in artifacts"
             fi
 
             # Move JWT keys if exist
@@ -199,9 +206,9 @@ jobs:
             fi
 
             # Backup database if enabled
-            if [ "$BACKUP_DATABASE" == "true" ] && [ -f "$REMOTE_PATH/backend/.env.prod.local" ]; then
+            if [ "$BACKUP_DATABASE" == "true" ] && [ -f "$REMOTE_PATH/backend/.env.local" ]; then
               cd $REMOTE_PATH/backend
-              source .env.prod.local 2>/dev/null || true
+              source .env.local 2>/dev/null || true
 
               if [ -n "$DATABASE_URL" ]; then
                 DB_USER=$(echo $DATABASE_URL | sed -n 's/.*:\/\/\([^:]*\):.*/\1/p')
@@ -272,16 +279,16 @@ jobs:
               "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/cron/"
           fi
 
-          # Deploy .env.prod.local if exists
-          if [ -f "$BACKEND_PATH/.env.prod.local" ]; then
-            echo "→ Deploying .env.prod.local..."
+          # Deploy .env.local if exists
+          if [ -f "$BACKEND_PATH/.env.local" ]; then
+            echo "→ Deploying .env.local..."
             rsync -avz \
               -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              "$BACKEND_PATH/.env.prod.local" \
-              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.prod.local"
-            echo "✓ .env.prod.local deployed"
+              "$BACKEND_PATH/.env.local" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.local"
+            echo "✓ .env.local deployed"
           else
-            echo "⚠ No .env.prod.local found at $BACKEND_PATH/.env.prod.local"
+            echo "⚠ No .env.local found at $BACKEND_PATH/.env.local"
           fi
 
           # Deploy JWT keys if exist
