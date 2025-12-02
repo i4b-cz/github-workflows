@@ -19,10 +19,14 @@ on:
         description: 'Run PHPStan static analysis'
         type: boolean
         default: true
-      run-cs-fixer:
-        description: 'Run PHP-CS-Fixer code style check'
+      run-cs:
+        description: 'Run code style check (PHP-CS-Fixer or PHPCS)'
         type: boolean
         default: true
+      cs-tool:
+        description: 'Code style tool: cs-fixer or phpcs'
+        type: string
+        default: 'cs-fixer'
       run-tests:
         description: 'Run PHPUnit tests'
         type: boolean
@@ -48,9 +52,9 @@ on:
       phpstan-result:
         description: 'PHPStan result: success, failure, or skipped'
         value: ${{ jobs.php-ci.outputs.phpstan-result }}
-      cs-fixer-result:
-        description: 'PHP-CS-Fixer result: success, failure, or skipped'
-        value: ${{ jobs.php-ci.outputs.cs-fixer-result }}
+      cs-result:
+        description: 'Code style check result: success, failure, or skipped'
+        value: ${{ jobs.php-ci.outputs.cs-result }}
       tests-result:
         description: 'PHPUnit result: success, failure, or skipped'
         value: ${{ jobs.php-ci.outputs.tests-result }}
@@ -62,7 +66,7 @@ jobs:
 
     outputs:
       phpstan-result: ${{ steps.phpstan.outcome || 'skipped' }}
-      cs-fixer-result: ${{ steps.cs-fixer.outcome || 'skipped' }}
+      cs-result: ${{ steps.cs-check.outcome || 'skipped' }}
       tests-result: ${{ steps.tests.outcome || 'skipped' }}
 
     steps:
@@ -105,15 +109,23 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: vendor/bin/phpstan analyse --error-format=github
 
-      - name: Run PHP-CS-Fixer
-        id: cs-fixer
-        if: inputs.run-cs-fixer
+      - name: Run code style check
+        id: cs-check
+        if: inputs.run-cs
         working-directory: ${{ inputs.working-directory }}
+        env:
+          CS_TOOL: ${{ inputs.cs-tool }}
         run: |
-          if composer run-script --list 2>/dev/null | grep -q "cs-check"; then
-            composer cs-check
+          if [ "$CS_TOOL" == "phpcs" ]; then
+            echo "Running PHP CodeSniffer..."
+            vendor/bin/phpcs
           else
-            vendor/bin/php-cs-fixer fix --dry-run --diff
+            echo "Running PHP-CS-Fixer..."
+            if composer run-script --list 2>/dev/null | grep -q "cs-check"; then
+              composer cs-check
+            else
+              vendor/bin/php-cs-fixer fix --dry-run --diff
+            fi
           fi
 
       - name: Create test database schema

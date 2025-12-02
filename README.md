@@ -49,7 +49,8 @@ jobs:
 | `working-directory` | string | `'./backend'` | Cesta k PHP projektu |
 | `php-extensions` | string | `'mbstring, xml, ...'` | PHP rozšíření |
 | `run-phpstan` | boolean | `true` | Spustit PHPStan |
-| `run-cs-fixer` | boolean | `true` | Spustit PHP-CS-Fixer |
+| `run-cs` | boolean | `true` | Spustit code style check |
+| `cs-tool` | string | `'cs-fixer'` | Nástroj: `'cs-fixer'` nebo `'phpcs'` |
 | `run-tests` | boolean | `true` | Spustit PHPUnit |
 | `test-scope` | string | `'unit'` | `'unit'` nebo `'all'` |
 | `exclude-groups` | string | `'integration'` | PHPUnit exclude groups |
@@ -61,7 +62,7 @@ jobs:
 | Output | Popis |
 |--------|-------|
 | `phpstan-result` | `success` / `failure` / `skipped` |
-| `cs-fixer-result` | `success` / `failure` / `skipped` |
+| `cs-result` | `success` / `failure` / `skipped` |
 | `tests-result` | `success` / `failure` / `skipped` |
 
 ---
