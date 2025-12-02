@@ -215,7 +215,7 @@ jobs:
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ vars.REMOTE_PATH }}
         run: |
-          rsync -avz --delete \
+          rsync -avz --delete --mkpath \
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
             --exclude='index.php' \
             --exclude='cron/' \
@@ -240,7 +240,7 @@ jobs:
           done < /tmp/rsync-excludes.txt
 
           # Deploy backend code (using array expansion for safety)
-          rsync -avz --delete \
+          rsync -avz --delete --mkpath \
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
             "${EXCLUDE_ARGS[@]}" \
             "$BACKEND_PATH/" \
