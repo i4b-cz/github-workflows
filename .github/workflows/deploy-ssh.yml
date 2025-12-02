@@ -215,8 +215,8 @@ jobs:
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ vars.REMOTE_PATH }}
         run: |
-          rsync -av --delete --protocol=30 \
-            -e "ssh -q -i ~/.ssh/deploy_key -p $SSH_PORT" \
+          rsync -av --delete \
+            -e "ssh -q -T -o BatchMode=yes -i ~/.ssh/deploy_key -p $SSH_PORT" \
             --exclude='index.php' \
             --exclude='cron/' \
             ${{ steps.config.outputs.frontend-path }}/dist/ \
@@ -240,30 +240,30 @@ jobs:
           done < /tmp/rsync-excludes.txt
 
           # Deploy backend code (using array expansion for safety)
-          rsync -av --delete --protocol=30 \
-            -e "ssh -q -i ~/.ssh/deploy_key -p $SSH_PORT" \
+          rsync -av --delete \
+            -e "ssh -q -T -o BatchMode=yes -i ~/.ssh/deploy_key -p $SSH_PORT" \
             "${EXCLUDE_ARGS[@]}" \
             "$BACKEND_PATH/" \
             "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/"
 
           # Deploy public/index.php separately
-          rsync -av --protocol=30 \
-            -e "ssh -q -i ~/.ssh/deploy_key -p $SSH_PORT" \
+          rsync -av \
+            -e "ssh -q -T -o BatchMode=yes -i ~/.ssh/deploy_key -p $SSH_PORT" \
             "$BACKEND_PATH/public/index.php" \
             "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/index.php"
 
           # Deploy public/cron if exists
           if [ -d "$BACKEND_PATH/public/cron" ]; then
-            rsync -av --protocol=30 \
-              -e "ssh -q -i ~/.ssh/deploy_key -p $SSH_PORT" \
+            rsync -av \
+              -e "ssh -q -T -o BatchMode=yes -i ~/.ssh/deploy_key -p $SSH_PORT" \
               "$BACKEND_PATH/public/cron/" \
               "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/cron/"
           fi
 
           # Deploy .env.prod.local if exists
           if [ -f "$BACKEND_PATH/.env.prod.local" ]; then
-            rsync -av --protocol=30 \
-              -e "ssh -q -i ~/.ssh/deploy_key -p $SSH_PORT" \
+            rsync -av \
+              -e "ssh -q -T -o BatchMode=yes -i ~/.ssh/deploy_key -p $SSH_PORT" \
               "$BACKEND_PATH/.env.prod.local" \
               "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.prod.local"
           fi
@@ -271,8 +271,8 @@ jobs:
           # Deploy JWT keys if exist
           if [ -d "$BACKEND_PATH/config/jwt" ]; then
             ssh -i ~/.ssh/deploy_key -p $SSH_PORT "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_PATH/backend/config/jwt"
-            rsync -av --protocol=30 \
-              -e "ssh -q -i ~/.ssh/deploy_key -p $SSH_PORT" \
+            rsync -av \
+              -e "ssh -q -T -o BatchMode=yes -i ~/.ssh/deploy_key -p $SSH_PORT" \
               "$BACKEND_PATH/config/jwt/" \
               "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/config/jwt/"
             ssh -i ~/.ssh/deploy_key -p $SSH_PORT "$SSH_USER@$SSH_HOST" "chmod 600 $REMOTE_PATH/backend/config/jwt/*.pem 2>/dev/null || true"
