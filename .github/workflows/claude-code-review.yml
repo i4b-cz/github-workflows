@@ -1,0 +1,84 @@
+name: Claude Code Review
+
+on:
+  workflow_call:
+    inputs:
+      skip-title-keyword:
+        description: 'Skip review if PR title contains this keyword'
+        type: string
+        default: '[skip-review]'
+      review-prompt:
+        description: 'Custom review prompt (uses default if empty)'
+        type: string
+        default: ''
+      model:
+        description: 'Claude model to use'
+        type: string
+        default: ''
+
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: 'Claude Code OAuth token'
+        required: true
+
+jobs:
+  claude-review:
+    # Skip if PR title contains skip keyword
+    if: ${{ !contains(github.event.pull_request.title, inputs.skip-title-keyword || '[skip-review]') }}
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: ${{ inputs.model }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }}
+            BRANCH: ${{ github.head_ref }}
+            BASE: ${{ github.base_ref }}
+            AUTHOR: @${{ github.actor }}
+
+            ${{ inputs.review-prompt || 'You are reviewing a pull request. This is an automated code review to provide early feedback to the developer.
+
+            Please analyze the changes in this PR and provide feedback on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Performance considerations
+            - Security concerns (especially important!)
+            - Missing test coverage
+            - Adherence to project conventions (see CLAUDE.md if exists)
+
+            **Instructions:**
+            1. Use `gh pr diff $GITHUB_EVENT_PULL_REQUEST_NUMBER` to see the changes
+            2. Review the code changes carefully
+            3. **Post your review as a comment on the PR** using `gh pr comment`
+            4. Format your comment with clear sections:
+               - 🔴 **Critical Issues** (security, bugs that could cause data loss)
+               - 🟡 **Important Suggestions** (performance, missing validation)
+               - 🟢 **Minor Improvements** (code quality, style)
+               - ✅ **What Looks Good** (positive feedback)
+            5. Use markdown with code examples for clarity
+            6. Be constructive and specific
+
+            **Only comment if you find significant issues.** For trivial PRs with no concerns, you can skip commenting.
+
+            Use `gh pr comment $GITHUB_EVENT_PULL_REQUEST_NUMBER --body "YOUR_REVIEW_HERE"` to post your review.' }}
+
+          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh search:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*)"'
+        env:
+          GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}

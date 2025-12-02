@@ -1,0 +1,148 @@
+name: PHP CI
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: 'PHP version to use'
+        type: string
+        default: '8.4'
+      working-directory:
+        description: 'Path to PHP project'
+        type: string
+        default: './backend'
+      php-extensions:
+        description: 'PHP extensions to install (comma-separated)'
+        type: string
+        default: 'mbstring, xml, ctype, iconv, intl, pdo_sqlite, dom, filter, gd, json, pdo'
+      run-phpstan:
+        description: 'Run PHPStan static analysis'
+        type: boolean
+        default: true
+      run-cs-fixer:
+        description: 'Run PHP-CS-Fixer code style check'
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Run PHPUnit tests'
+        type: boolean
+        default: true
+      test-scope:
+        description: 'Test scope: "unit" (excludes integration) or "all"'
+        type: string
+        default: 'unit'
+      exclude-groups:
+        description: 'PHPUnit exclude groups (used when test-scope=unit)'
+        type: string
+        default: 'integration'
+      coverage:
+        description: 'Generate coverage report'
+        type: boolean
+        default: false
+      database:
+        description: 'Database type for tests: sqlite, mysql, or none'
+        type: string
+        default: 'sqlite'
+
+    outputs:
+      phpstan-result:
+        description: 'PHPStan result: success, failure, or skipped'
+        value: ${{ jobs.php-ci.outputs.phpstan-result }}
+      cs-fixer-result:
+        description: 'PHP-CS-Fixer result: success, failure, or skipped'
+        value: ${{ jobs.php-ci.outputs.cs-fixer-result }}
+      tests-result:
+        description: 'PHPUnit result: success, failure, or skipped'
+        value: ${{ jobs.php-ci.outputs.tests-result }}
+
+jobs:
+  php-ci:
+    name: PHP CI
+    runs-on: ubuntu-latest
+
+    outputs:
+      phpstan-result: ${{ steps.phpstan.outcome || 'skipped' }}
+      cs-fixer-result: ${{ steps.cs-fixer.outcome || 'skipped' }}
+      tests-result: ${{ steps.tests.outcome || 'skipped' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          extensions: ${{ inputs.php-extensions }}
+          coverage: ${{ inputs.coverage && 'xdebug' || 'none' }}
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles(format('{0}/composer.lock', inputs.working-directory)) }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Warmup Symfony cache
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          if [ -f "bin/console" ]; then
+            php bin/console cache:warmup --env=dev
+          fi
+
+      - name: Run PHPStan
+        id: phpstan
+        if: inputs.run-phpstan
+        working-directory: ${{ inputs.working-directory }}
+        run: vendor/bin/phpstan analyse --error-format=github
+
+      - name: Run PHP-CS-Fixer
+        id: cs-fixer
+        if: inputs.run-cs-fixer
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          if composer run-script --list 2>/dev/null | grep -q "cs-check"; then
+            composer cs-check
+          else
+            vendor/bin/php-cs-fixer fix --dry-run --diff
+          fi
+
+      - name: Create test database schema
+        if: inputs.run-tests && inputs.database != 'none'
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          if [ -f "bin/console" ]; then
+            php bin/console doctrine:schema:create --env=test --no-interaction
+          fi
+
+      - name: Run PHPUnit tests
+        id: tests
+        if: inputs.run-tests
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          echo "::group::PHPUnit Test Results"
+          if [ "${{ inputs.test-scope }}" == "all" ]; then
+            echo "Running all tests (unit + integration)..."
+            php bin/phpunit --testdox --colors=always
+          else
+            echo "Running unit tests only (excluding: ${{ inputs.exclude-groups }})..."
+            php bin/phpunit --exclude-group=${{ inputs.exclude-groups }} --testdox --colors=always
+          fi
+          echo "::endgroup::"
+
+      - name: Generate coverage report
+        if: inputs.run-tests && inputs.coverage
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          echo "::group::Coverage Report"
+          php bin/phpunit --coverage-text
+          echo "::endgroup::"

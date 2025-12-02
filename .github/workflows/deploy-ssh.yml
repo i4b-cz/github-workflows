@@ -1,0 +1,393 @@
+name: Deploy via SSH
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'GitHub environment (staging/production)'
+        type: string
+        required: true
+      node-version:
+        description: 'Node.js version for frontend build'
+        type: string
+        default: '20'
+      deploy-config:
+        description: 'JSON configuration for deployment'
+        type: string
+        required: true
+        # Expected structure:
+        # {
+        #   "backend": { "enabled": true, "path": "./backend", "rsync-exclude": [...] },
+        #   "frontend": { "enabled": true, "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/" },
+        #   "backup": { "enabled": false, "database": true, "commit-hash": true },
+        #   "health-check": { "enabled": true, "url": "/api/config", "verify-production-mode": false },
+        #   "post-deploy": { "composer-install": true, "run-migrations": true, "clear-cache": true, "restart-workers": false, "custom-commands": [] }
+        # }
+
+    secrets:
+      SSH_KEY:
+        description: 'SSH private key for deployment'
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Parse deploy config
+        id: config
+        run: |
+          CONFIG='${{ inputs.deploy-config }}'
+
+          # Backend config
+          echo "backend-enabled=$(echo "$CONFIG" | jq -r '.backend.enabled // true')" >> $GITHUB_OUTPUT
+          echo "backend-path=$(echo "$CONFIG" | jq -r '.backend.path // "./backend"')" >> $GITHUB_OUTPUT
+
+          # Frontend config
+          echo "frontend-enabled=$(echo "$CONFIG" | jq -r '.frontend.enabled // true')" >> $GITHUB_OUTPUT
+          echo "frontend-path=$(echo "$CONFIG" | jq -r '.frontend.path // "./frontend"')" >> $GITHUB_OUTPUT
+          echo "frontend-build-command=$(echo "$CONFIG" | jq -r '.frontend["build-command"] // "npm run build"')" >> $GITHUB_OUTPUT
+          echo "frontend-deploy-to=$(echo "$CONFIG" | jq -r '.frontend["deploy-to"] // "backend/public/"')" >> $GITHUB_OUTPUT
+
+          # Backup config
+          echo "backup-enabled=$(echo "$CONFIG" | jq -r '.backup.enabled // false')" >> $GITHUB_OUTPUT
+          echo "backup-database=$(echo "$CONFIG" | jq -r '.backup.database // true')" >> $GITHUB_OUTPUT
+
+          # Health check config
+          echo "healthcheck-enabled=$(echo "$CONFIG" | jq -r '.["health-check"].enabled // true')" >> $GITHUB_OUTPUT
+          echo "healthcheck-url=$(echo "$CONFIG" | jq -r '.["health-check"].url // "/api/config"')" >> $GITHUB_OUTPUT
+          echo "healthcheck-verify-production=$(echo "$CONFIG" | jq -r '.["health-check"]["verify-production-mode"] // false')" >> $GITHUB_OUTPUT
+
+          # Post-deploy config
+          echo "postdeploy-composer=$(echo "$CONFIG" | jq -r '.["post-deploy"]["composer-install"] // true')" >> $GITHUB_OUTPUT
+          echo "postdeploy-migrations=$(echo "$CONFIG" | jq -r '.["post-deploy"]["run-migrations"] // true')" >> $GITHUB_OUTPUT
+          echo "postdeploy-cache=$(echo "$CONFIG" | jq -r '.["post-deploy"]["clear-cache"] // true')" >> $GITHUB_OUTPUT
+          echo "postdeploy-workers=$(echo "$CONFIG" | jq -r '.["post-deploy"]["restart-workers"] // false')" >> $GITHUB_OUTPUT
+
+          # Store rsync excludes and post-build commands as files for later use
+          echo "$CONFIG" | jq -r '.backend["rsync-exclude"] // [".git", "node_modules", "vendor", "var/cache", "var/log", "var/pdf", "public/"] | .[]' > /tmp/rsync-excludes.txt
+          echo "$CONFIG" | jq -r '.frontend["post-build-commands"] // [] | .[]' > /tmp/post-build-commands.txt
+          echo "$CONFIG" | jq -r '.["post-deploy"]["custom-commands"] // [] | .[]' > /tmp/custom-commands.txt
+
+      - name: Setup Node.js
+        if: steps.config.outputs.frontend-enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ steps.config.outputs.frontend-path }}/package-lock.json
+
+      - name: Install frontend dependencies
+        if: steps.config.outputs.frontend-enabled == 'true'
+        working-directory: ${{ steps.config.outputs.frontend-path }}
+        run: npm ci
+
+      - name: Build frontend
+        if: steps.config.outputs.frontend-enabled == 'true'
+        working-directory: ${{ steps.config.outputs.frontend-path }}
+        env:
+          VITE_API_BASE_URL: ${{ vars.API_URL }}
+          VITE_API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          # Create .env.production with VITE variables
+          echo "VITE_API_BASE_URL=$VITE_API_BASE_URL" > .env.production
+          if [ -n "$VITE_API_KEY" ]; then
+            echo "VITE_API_KEY=$VITE_API_KEY" >> .env.production
+          fi
+
+          # Run build
+          ${{ steps.config.outputs.frontend-build-command }}
+
+          # Run post-build commands
+          if [ -s /tmp/post-build-commands.txt ]; then
+            echo "Running post-build commands..."
+            while IFS= read -r cmd; do
+              echo "→ $cmd"
+              eval "$cmd"
+            done < /tmp/post-build-commands.txt
+          fi
+
+      - name: Download deployment artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-config
+          path: ./deploy-artifacts
+        continue-on-error: true
+
+      - name: Move artifacts to correct locations
+        run: |
+          if [ -d "./deploy-artifacts" ]; then
+            # Move .env.prod.local if exists
+            if [ -f "./deploy-artifacts/backend/.env.prod.local" ]; then
+              cp ./deploy-artifacts/backend/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.prod.local
+              echo "✓ Copied .env.prod.local"
+            elif [ -f "./deploy-artifacts/.env.prod.local" ]; then
+              cp ./deploy-artifacts/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.prod.local
+              echo "✓ Copied .env.prod.local"
+            fi
+
+            # Move JWT keys if exist
+            if [ -d "./deploy-artifacts/backend/config/jwt" ]; then
+              mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
+              cp ./deploy-artifacts/backend/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
+              echo "✓ Copied JWT keys"
+            elif [ -d "./deploy-artifacts/config/jwt" ]; then
+              mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
+              cp ./deploy-artifacts/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
+              echo "✓ Copied JWT keys"
+            fi
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ vars.SSH_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts
+
+      - name: Create backup
+        if: steps.config.outputs.backup-enabled == 'true'
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT }}
+          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          BACKUP_DATABASE: ${{ steps.config.outputs.backup-database }}
+        run: |
+          echo "→ Creating backup..."
+          ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USER@$SSH_HOST "bash -s" << 'EOF'
+            set -e
+
+            BACKUP_DIR="$REMOTE_PATH/../backups"
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            BACKUP_NAME="backup_${TIMESTAMP}"
+
+            mkdir -p "$BACKUP_DIR"
+
+            # Save current commit
+            cd $REMOTE_PATH
+            if [ -d ".git" ]; then
+              git rev-parse --short HEAD > "$BACKUP_DIR/${BACKUP_NAME}_commit.txt" 2>/dev/null || echo "unknown" > "$BACKUP_DIR/${BACKUP_NAME}_commit.txt"
+            fi
+
+            # Backup database if enabled
+            if [ "$BACKUP_DATABASE" == "true" ] && [ -f "$REMOTE_PATH/backend/.env.prod.local" ]; then
+              cd $REMOTE_PATH/backend
+              source .env.prod.local 2>/dev/null || true
+
+              if [ -n "$DATABASE_URL" ]; then
+                DB_USER=$(echo $DATABASE_URL | sed -n 's/.*:\/\/\([^:]*\):.*/\1/p')
+                DB_PASS=$(echo $DATABASE_URL | sed -n 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/p')
+                DB_HOST=$(echo $DATABASE_URL | sed -n 's/.*@\([^:\/]*\).*/\1/p')
+                DB_NAME=$(echo $DATABASE_URL | sed -n 's/.*\/\([^?]*\).*/\1/p')
+
+                if [ -n "$DB_NAME" ]; then
+                  mysqldump -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" > "$BACKUP_DIR/${BACKUP_NAME}_database.sql" 2>/dev/null || echo "DB backup warning"
+                  echo "✓ Database backup created"
+                fi
+              fi
+            fi
+
+            echo "✓ Backup created: $BACKUP_NAME"
+          EOF
+
+      - name: Deploy frontend
+        if: steps.config.outputs.frontend-enabled == 'true'
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT }}
+          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+            --exclude='index.php' \
+            --exclude='cron/' \
+            ${{ steps.config.outputs.frontend-path }}/dist/ \
+            $SSH_USER@$SSH_HOST:$REMOTE_PATH/${{ steps.config.outputs.frontend-deploy-to }}
+
+      - name: Deploy backend
+        if: steps.config.outputs.backend-enabled == 'true'
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT }}
+          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+        run: |
+          # Build rsync exclude arguments
+          EXCLUDES=""
+          while IFS= read -r exclude; do
+            EXCLUDES="$EXCLUDES --exclude='$exclude'"
+          done < /tmp/rsync-excludes.txt
+
+          # Deploy backend code
+          eval rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+            $EXCLUDES \
+            ${{ steps.config.outputs.backend-path }}/ \
+            $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/
+
+          # Deploy public/index.php separately
+          rsync -avz \
+            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+            ${{ steps.config.outputs.backend-path }}/public/index.php \
+            $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/index.php
+
+          # Deploy public/cron if exists
+          if [ -d "${{ steps.config.outputs.backend-path }}/public/cron" ]; then
+            rsync -avz \
+              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+              ${{ steps.config.outputs.backend-path }}/public/cron/ \
+              $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/cron/
+          fi
+
+          # Deploy .env.prod.local if exists
+          if [ -f "${{ steps.config.outputs.backend-path }}/.env.prod.local" ]; then
+            rsync -avz \
+              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+              ${{ steps.config.outputs.backend-path }}/.env.prod.local \
+              $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.prod.local
+          fi
+
+          # Deploy JWT keys if exist
+          if [ -d "${{ steps.config.outputs.backend-path }}/config/jwt" ]; then
+            ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USER@$SSH_HOST "mkdir -p $REMOTE_PATH/backend/config/jwt"
+            rsync -avz \
+              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+              ${{ steps.config.outputs.backend-path }}/config/jwt/ \
+              $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/config/jwt/
+            ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USER@$SSH_HOST "chmod 600 $REMOTE_PATH/backend/config/jwt/*.pem 2>/dev/null || true"
+          fi
+
+          echo "✓ Backend deployed"
+
+      - name: Run post-deploy tasks
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT }}
+          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          DO_COMPOSER: ${{ steps.config.outputs.postdeploy-composer }}
+          DO_MIGRATIONS: ${{ steps.config.outputs.postdeploy-migrations }}
+          DO_CACHE: ${{ steps.config.outputs.postdeploy-cache }}
+          DO_WORKERS: ${{ steps.config.outputs.postdeploy-workers }}
+        run: |
+          # Copy custom commands to remote
+          CUSTOM_COMMANDS=$(cat /tmp/custom-commands.txt | tr '\n' ';')
+
+          ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USER@$SSH_HOST "bash -s" << EOF
+            set -e
+
+            cd $REMOTE_PATH/backend
+
+            if [ "$DO_COMPOSER" == "true" ]; then
+              echo "→ Installing dependencies..."
+              composer install --no-dev --optimize-autoloader --no-interaction --no-scripts
+            fi
+
+            if [ "$DO_MIGRATIONS" == "true" ]; then
+              echo "→ Running migrations..."
+              APP_ENV=prod php bin/console doctrine:migrations:migrate --no-interaction --allow-no-migration
+            fi
+
+            if [ "$DO_CACHE" == "true" ]; then
+              echo "→ Clearing cache..."
+              APP_ENV=prod php bin/console cache:clear --no-debug
+              APP_ENV=prod php bin/console cache:warmup --no-debug
+            fi
+
+            echo "→ Fixing permissions..."
+            chmod -R 775 var/cache var/log 2>/dev/null || true
+
+            if [ "$DO_WORKERS" == "true" ]; then
+              echo "→ Restarting workers..."
+              supervisorctl restart messenger-consume:* 2>/dev/null || echo "Supervisor not available"
+            fi
+
+            # Run custom commands
+            if [ -n "$CUSTOM_COMMANDS" ]; then
+              echo "→ Running custom commands..."
+              IFS=';' read -ra CMDS <<< "$CUSTOM_COMMANDS"
+              for cmd in "\${CMDS[@]}"; do
+                if [ -n "\$cmd" ]; then
+                  echo "  → \$cmd"
+                  eval "\$cmd"
+                fi
+              done
+            fi
+
+            echo "✓ Post-deploy tasks completed"
+          EOF
+
+      - name: Health check
+        if: steps.config.outputs.healthcheck-enabled == 'true'
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          HEALTH_URL: ${{ steps.config.outputs.healthcheck-url }}
+          VERIFY_PRODUCTION: ${{ steps.config.outputs.healthcheck-verify-production }}
+        run: |
+          sleep 5
+
+          FULL_URL="${APP_URL}${HEALTH_URL}"
+          echo "→ Checking $FULL_URL..."
+
+          HTTP_CODE=$(curl -s -o /tmp/health_response.txt -w "%{http_code}" "$FULL_URL")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✓ API is healthy (HTTP $HTTP_CODE)"
+
+            # Verify production mode if enabled
+            if [ "$VERIFY_PRODUCTION" == "true" ]; then
+              RESPONSE=$(cat /tmp/health_response.txt)
+              TESTING_MODE=$(echo "$RESPONSE" | grep -o '"testing_mode":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+
+              if [ "$TESTING_MODE" = "false" ]; then
+                echo "✓ Production mode confirmed (testing_mode: false)"
+              else
+                echo "✗ WARNING: testing_mode is not false!"
+                exit 1
+              fi
+            fi
+          else
+            echo "✗ Health check failed (HTTP $HTTP_CODE)"
+            cat /tmp/health_response.txt
+            exit 1
+          fi
+
+          # Check frontend
+          echo "→ Checking frontend at $APP_URL/..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✓ Frontend is accessible (HTTP $HTTP_CODE)"
+          else
+            echo "⚠ Frontend returned HTTP $HTTP_CODE"
+          fi
+
+      - name: Deployment notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "================================================"
+            echo "✓ DEPLOYMENT SUCCESSFUL"
+            echo "================================================"
+            echo "Environment: ${{ inputs.environment }}"
+            echo "URL: ${{ vars.APP_URL }}"
+          else
+            echo "✗ DEPLOYMENT FAILED"
+            echo "Environment: ${{ inputs.environment }}"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key
+          rm -f /tmp/rsync-excludes.txt /tmp/post-build-commands.txt /tmp/custom-commands.txt /tmp/health_response.txt
