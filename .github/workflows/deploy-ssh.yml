@@ -41,8 +41,11 @@ jobs:
 
       - name: Parse deploy config
         id: config
+        env:
+          DEPLOY_CONFIG: ${{ inputs.deploy-config }}
         run: |
-          CONFIG='${{ inputs.deploy-config }}'
+          # Use env var to avoid shell injection from JSON content
+          CONFIG="$DEPLOY_CONFIG"
 
           # Backend config
           echo "backend-enabled=$(echo "$CONFIG" | jq -r '.backend.enabled // true')" >> $GITHUB_OUTPUT
@@ -93,6 +96,7 @@ jobs:
         env:
           VITE_API_BASE_URL: ${{ vars.API_URL }}
           VITE_API_KEY: ${{ secrets.API_KEY }}
+          BUILD_COMMAND: ${{ steps.config.outputs.frontend-build-command }}
         run: |
           # Create .env.production with VITE variables
           echo "VITE_API_BASE_URL=$VITE_API_BASE_URL" > .env.production
@@ -100,15 +104,19 @@ jobs:
             echo "VITE_API_KEY=$VITE_API_KEY" >> .env.production
           fi
 
-          # Run build
-          ${{ steps.config.outputs.frontend-build-command }}
+          # Run build (command from config via env var for safety)
+          echo "→ Running: $BUILD_COMMAND"
+          $BUILD_COMMAND
 
-          # Run post-build commands
+          # Run post-build commands (from config file, validated by jq)
           if [ -s /tmp/post-build-commands.txt ]; then
             echo "Running post-build commands..."
             while IFS= read -r cmd; do
-              echo "→ $cmd"
-              eval "$cmd"
+              if [ -n "$cmd" ]; then
+                echo "→ $cmd"
+                # Execute command - caller is responsible for safe commands
+                bash -c "$cmd"
+              fi
             done < /tmp/post-build-commands.txt
           fi
 
@@ -221,50 +229,53 @@ jobs:
           SSH_USER: ${{ vars.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          BACKEND_PATH: ${{ steps.config.outputs.backend-path }}
         run: |
-          # Build rsync exclude arguments
-          EXCLUDES=""
+          # Build rsync exclude arguments safely using array
+          EXCLUDE_ARGS=()
           while IFS= read -r exclude; do
-            EXCLUDES="$EXCLUDES --exclude='$exclude'"
+            if [ -n "$exclude" ]; then
+              EXCLUDE_ARGS+=("--exclude=$exclude")
+            fi
           done < /tmp/rsync-excludes.txt
 
-          # Deploy backend code
-          eval rsync -avz --delete \
+          # Deploy backend code (using array expansion for safety)
+          rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-            $EXCLUDES \
-            ${{ steps.config.outputs.backend-path }}/ \
-            $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/
+            "${EXCLUDE_ARGS[@]}" \
+            "$BACKEND_PATH/" \
+            "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/"
 
           # Deploy public/index.php separately
           rsync -avz \
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-            ${{ steps.config.outputs.backend-path }}/public/index.php \
-            $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/index.php
+            "$BACKEND_PATH/public/index.php" \
+            "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/index.php"
 
           # Deploy public/cron if exists
-          if [ -d "${{ steps.config.outputs.backend-path }}/public/cron" ]; then
+          if [ -d "$BACKEND_PATH/public/cron" ]; then
             rsync -avz \
               -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              ${{ steps.config.outputs.backend-path }}/public/cron/ \
-              $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/cron/
+              "$BACKEND_PATH/public/cron/" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/cron/"
           fi
 
           # Deploy .env.prod.local if exists
-          if [ -f "${{ steps.config.outputs.backend-path }}/.env.prod.local" ]; then
+          if [ -f "$BACKEND_PATH/.env.prod.local" ]; then
             rsync -avz \
               -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              ${{ steps.config.outputs.backend-path }}/.env.prod.local \
-              $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.prod.local
+              "$BACKEND_PATH/.env.prod.local" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.prod.local"
           fi
 
           # Deploy JWT keys if exist
-          if [ -d "${{ steps.config.outputs.backend-path }}/config/jwt" ]; then
-            ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USER@$SSH_HOST "mkdir -p $REMOTE_PATH/backend/config/jwt"
+          if [ -d "$BACKEND_PATH/config/jwt" ]; then
+            ssh -i ~/.ssh/deploy_key -p $SSH_PORT "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_PATH/backend/config/jwt"
             rsync -avz \
               -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              ${{ steps.config.outputs.backend-path }}/config/jwt/ \
-              $SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/config/jwt/
-            ssh -i ~/.ssh/deploy_key -p $SSH_PORT $SSH_USER@$SSH_HOST "chmod 600 $REMOTE_PATH/backend/config/jwt/*.pem 2>/dev/null || true"
+              "$BACKEND_PATH/config/jwt/" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/config/jwt/"
+            ssh -i ~/.ssh/deploy_key -p $SSH_PORT "$SSH_USER@$SSH_HOST" "chmod 600 $REMOTE_PATH/backend/config/jwt/*.pem 2>/dev/null || true"
           fi
 
           echo "✓ Backend deployed"

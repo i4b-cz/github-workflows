@@ -2,6 +2,16 @@
 
 Centrální repozitář s reusable GitHub workflows pro projekty firmy i4b.cz.
 
+## Bezpečnostní poznámky
+
+> **⚠️ Důležité:** Tyto workflows jsou navrženy pro použití v rámci organizace i4b-cz.
+> Některé inputy (např. `lint-command`, `test-command`, `custom-commands`) jsou přímo
+> vykonávány jako shell příkazy. **Nikdy nepředávejte nedůvěryhodný vstup** do těchto polí.
+
+- **Secrets**: Všechny citlivé údaje (SSH klíče, tokeny) jsou předávány jako GitHub Secrets
+- **Environment variables**: Proměnné serveru (SSH_HOST, REMOTE_PATH) jsou uloženy v GitHub Environments
+- **Command execution**: Příkazy v `deploy-config.post-deploy.custom-commands` jsou vykonávány na vzdáleném serveru
+
 ## Dostupné workflows
 
 | Workflow | Popis |
