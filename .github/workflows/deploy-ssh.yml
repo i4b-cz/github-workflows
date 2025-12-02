@@ -129,26 +129,38 @@ jobs:
 
       - name: Move artifacts to correct locations
         run: |
+          echo "→ Looking for deployment artifacts..."
+          echo "  Backend path: ${{ steps.config.outputs.backend-path }}"
+
           if [ -d "./deploy-artifacts" ]; then
+            echo "  Artifact directory contents:"
+            find ./deploy-artifacts -type f | head -20
+
             # Move .env.prod.local if exists
             if [ -f "./deploy-artifacts/backend/.env.prod.local" ]; then
               cp ./deploy-artifacts/backend/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.prod.local
-              echo "✓ Copied .env.prod.local"
+              echo "✓ Copied .env.prod.local from backend/"
             elif [ -f "./deploy-artifacts/.env.prod.local" ]; then
               cp ./deploy-artifacts/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.prod.local
-              echo "✓ Copied .env.prod.local"
+              echo "✓ Copied .env.prod.local from root"
+            else
+              echo "⚠ No .env.prod.local found in artifacts"
             fi
 
             # Move JWT keys if exist
             if [ -d "./deploy-artifacts/backend/config/jwt" ]; then
               mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
               cp ./deploy-artifacts/backend/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
-              echo "✓ Copied JWT keys"
+              echo "✓ Copied JWT keys from backend/config/jwt/"
             elif [ -d "./deploy-artifacts/config/jwt" ]; then
               mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
               cp ./deploy-artifacts/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
-              echo "✓ Copied JWT keys"
+              echo "✓ Copied JWT keys from config/jwt/"
+            else
+              echo "⚠ No JWT keys found in artifacts"
             fi
+          else
+            echo "⚠ No deploy-artifacts directory found (artifact download may have failed)"
           fi
 
       - name: Configure SSH
@@ -262,10 +274,14 @@ jobs:
 
           # Deploy .env.prod.local if exists
           if [ -f "$BACKEND_PATH/.env.prod.local" ]; then
+            echo "→ Deploying .env.prod.local..."
             rsync -avz \
               -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
               "$BACKEND_PATH/.env.prod.local" \
               "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/.env.prod.local"
+            echo "✓ .env.prod.local deployed"
+          else
+            echo "⚠ No .env.prod.local found at $BACKEND_PATH/.env.prod.local"
           fi
 
           # Deploy JWT keys if exist
