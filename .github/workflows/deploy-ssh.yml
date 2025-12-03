@@ -177,6 +177,11 @@ jobs:
               mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
               cp ./deploy-artifacts/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
               echo "✓ Copied JWT keys from config/jwt/"
+            elif ls ./deploy-artifacts/*.pem 1>/dev/null 2>&1; then
+              # Keys uploaded directly (artifact path ends with /)
+              mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
+              cp ./deploy-artifacts/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
+              echo "✓ Copied JWT keys from artifact root"
             else
               echo "⚠ No JWT keys found in artifacts (this may be expected)"
             fi
