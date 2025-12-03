@@ -17,8 +17,8 @@ on:
         required: true
         # Expected structure:
         # {
-        #   "backend": { "enabled": true, "path": "./backend", "rsync-exclude": [...] },
-        #   "frontend": { "enabled": true, "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/" },
+        #   "backend": { "enabled": true, "path": "./backend", "rsync-exclude": [...], "public-includes": ["index.php", ".htaccess", "cron/"] },
+        #   "frontend": { "enabled": true, "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/", "rsync-exclude": [...], "env-vars": true },
         #   "backup": { "enabled": false, "database": true, "commit-hash": true },
         #   "health-check": { "enabled": true, "url": "/api/config", "verify-production-mode": false },
         #   "post-deploy": { "composer-install": true, "run-migrations": true, "clear-cache": true, "restart-workers": false, "custom-commands": [] }
@@ -56,6 +56,7 @@ jobs:
           echo "frontend-path=$(echo "$CONFIG" | jq -r '.frontend.path // "./frontend"')" >> $GITHUB_OUTPUT
           echo "frontend-build-command=$(echo "$CONFIG" | jq -r '.frontend["build-command"] // "npm run build"')" >> $GITHUB_OUTPUT
           echo "frontend-deploy-to=$(echo "$CONFIG" | jq -r '.frontend["deploy-to"] // "backend/public/"')" >> $GITHUB_OUTPUT
+          echo "frontend-env-vars=$(echo "$CONFIG" | jq -r '.frontend["env-vars"] // true')" >> $GITHUB_OUTPUT
 
           # Backup config
           echo "backup-enabled=$(echo "$CONFIG" | jq -r '.backup.enabled // false')" >> $GITHUB_OUTPUT
@@ -72,8 +73,10 @@ jobs:
           echo "postdeploy-cache=$(echo "$CONFIG" | jq -r '.["post-deploy"]["clear-cache"] // true')" >> $GITHUB_OUTPUT
           echo "postdeploy-workers=$(echo "$CONFIG" | jq -r '.["post-deploy"]["restart-workers"] // false')" >> $GITHUB_OUTPUT
 
-          # Store rsync excludes and post-build commands as files for later use
+          # Store rsync excludes and other config lists as files for later use
           echo "$CONFIG" | jq -r '.backend["rsync-exclude"] // [".git", "node_modules", "vendor", "var/cache", "var/log", "var/pdf", "public/"] | .[]' > /tmp/rsync-excludes.txt
+          echo "$CONFIG" | jq -r '.backend["public-includes"] // ["index.php"] | .[]' > /tmp/public-includes.txt
+          echo "$CONFIG" | jq -r '.frontend["rsync-exclude"] // [] | .[]' > /tmp/frontend-rsync-excludes.txt
           echo "$CONFIG" | jq -r '.frontend["post-build-commands"] // [] | .[]' > /tmp/post-build-commands.txt
           echo "$CONFIG" | jq -r '.["post-deploy"]["custom-commands"] // [] | .[]' > /tmp/custom-commands.txt
 
@@ -97,11 +100,14 @@ jobs:
           VITE_API_BASE_URL: ${{ vars.API_URL }}
           VITE_API_KEY: ${{ secrets.API_KEY }}
           BUILD_COMMAND: ${{ steps.config.outputs.frontend-build-command }}
+          CREATE_ENV_VARS: ${{ steps.config.outputs.frontend-env-vars }}
         run: |
-          # Create .env.production with VITE variables
-          echo "VITE_API_BASE_URL=$VITE_API_BASE_URL" > .env.production
-          if [ -n "$VITE_API_KEY" ]; then
-            echo "VITE_API_KEY=$VITE_API_KEY" >> .env.production
+          # Create .env.production with VITE variables (optional, enabled by default)
+          if [ "$CREATE_ENV_VARS" == "true" ]; then
+            echo "VITE_API_BASE_URL=$VITE_API_BASE_URL" > .env.production
+            if [ -n "$VITE_API_KEY" ]; then
+              echo "VITE_API_KEY=$VITE_API_KEY" >> .env.production
+            fi
           fi
 
           # Run build (command from config via env var for safety)
@@ -234,12 +240,19 @@ jobs:
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ vars.REMOTE_PATH }}
         run: |
+          # Build frontend rsync exclude arguments from config
+          FRONTEND_EXCLUDE_ARGS=()
+          if [ -s /tmp/frontend-rsync-excludes.txt ]; then
+            while IFS= read -r exclude; do
+              if [ -n "$exclude" ]; then
+                FRONTEND_EXCLUDE_ARGS+=("--exclude=$exclude")
+              fi
+            done < /tmp/frontend-rsync-excludes.txt
+          fi
+
           rsync -avz --delete --mkpath \
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-            --exclude='index.php' \
-            --exclude='cron/' \
-            --exclude='.htaccess' \
-            --exclude='img/' \
+            "${FRONTEND_EXCLUDE_ARGS[@]}" \
             ${{ steps.config.outputs.frontend-path }}/dist/ \
             $SSH_USER@$SSH_HOST:$REMOTE_PATH/${{ steps.config.outputs.frontend-deploy-to }}
 
@@ -267,35 +280,24 @@ jobs:
             "$BACKEND_PATH/" \
             "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/"
 
-          # Deploy public/index.php separately
-          rsync -avz \
-            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-            "$BACKEND_PATH/public/index.php" \
-            "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/index.php"
-
-          # Deploy public/.htaccess if exists
-          if [ -f "$BACKEND_PATH/public/.htaccess" ]; then
-            rsync -avz \
-              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              "$BACKEND_PATH/public/.htaccess" \
-              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/.htaccess"
-          fi
-
-          # Deploy public/img if exists
-          if [ -d "$BACKEND_PATH/public/img" ]; then
-            rsync -avz \
-              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              "$BACKEND_PATH/public/img/" \
-              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/img/"
-          fi
-
-          # Deploy public/cron if exists
-          if [ -d "$BACKEND_PATH/public/cron" ]; then
-            rsync -avz \
-              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              "$BACKEND_PATH/public/cron/" \
-              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/cron/"
-          fi
+          # Deploy public/ includes from config (default: index.php)
+          while IFS= read -r item; do
+            if [ -n "$item" ]; then
+              if [ -f "$BACKEND_PATH/public/$item" ]; then
+                echo "→ Deploying public/$item"
+                rsync -avz \
+                  -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+                  "$BACKEND_PATH/public/$item" \
+                  "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/$item"
+              elif [ -d "$BACKEND_PATH/public/$item" ]; then
+                echo "→ Deploying public/$item/"
+                rsync -avz \
+                  -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+                  "$BACKEND_PATH/public/$item/" \
+                  "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/$item/"
+              fi
+            fi
+          done < /tmp/public-includes.txt
 
           # Deploy .env.local if exists
           if [ -f "$BACKEND_PATH/.env.local" ]; then
@@ -442,4 +444,4 @@ jobs:
         if: always()
         run: |
           rm -f ~/.ssh/deploy_key
-          rm -f /tmp/rsync-excludes.txt /tmp/post-build-commands.txt /tmp/custom-commands.txt /tmp/health_response.txt
+          rm -f /tmp/rsync-excludes.txt /tmp/public-includes.txt /tmp/frontend-rsync-excludes.txt /tmp/post-build-commands.txt /tmp/custom-commands.txt /tmp/health_response.txt

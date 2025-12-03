@@ -241,14 +241,17 @@ jobs:
   "backend": {
     "enabled": true,
     "path": "./backend",
-    "rsync-exclude": [".git", "node_modules", "vendor", "var/cache", "var/log"]
+    "rsync-exclude": [".git", "node_modules", "vendor", "var/cache", "var/log", "public/"],
+    "public-includes": ["index.php", ".htaccess", "cron/"]
   },
   "frontend": {
     "enabled": true,
     "path": "./frontend",
     "build-command": "npm run build",
     "post-build-commands": ["cp .htaccess.production dist/.htaccess"],
-    "deploy-to": "backend/public/"
+    "deploy-to": "backend/public/",
+    "rsync-exclude": ["index.php", "cron/", ".htaccess"],
+    "env-vars": true
   },
   "backup": {
     "enabled": true,
@@ -269,6 +272,32 @@ jobs:
   }
 }
 ```
+
+### Config Options
+
+| Sekce | Klíč | Default | Popis |
+|-------|------|---------|-------|
+| `backend` | `enabled` | `true` | Povolit backend deploy |
+| `backend` | `path` | `"./backend"` | Cesta k backend kódu |
+| `backend` | `rsync-exclude` | `[".git", "node_modules", ...]` | Soubory/složky vyloučené z rsync |
+| `backend` | `public-includes` | `["index.php"]` | Soubory/složky z public/ k deploynutí |
+| `frontend` | `enabled` | `true` | Povolit frontend build a deploy |
+| `frontend` | `path` | `"./frontend"` | Cesta k frontend kódu |
+| `frontend` | `build-command` | `"npm run build"` | Build příkaz |
+| `frontend` | `post-build-commands` | `[]` | Příkazy po buildu |
+| `frontend` | `deploy-to` | `"backend/public/"` | Cílová složka pro frontend |
+| `frontend` | `rsync-exclude` | `[]` | Soubory vyloučené z frontend deploy |
+| `frontend` | `env-vars` | `true` | Vytvořit .env.production s VITE_* proměnnými |
+| `backup` | `enabled` | `false` | Povolit backup před deploy |
+| `backup` | `database` | `true` | Zálohovat databázi |
+| `health-check` | `enabled` | `true` | Povolit health check po deploy |
+| `health-check` | `url` | `"/api/config"` | URL pro health check |
+| `health-check` | `verify-production-mode` | `false` | Ověřit testing_mode: false |
+| `post-deploy` | `composer-install` | `true` | Spustit composer install |
+| `post-deploy` | `run-migrations` | `true` | Spustit migrace |
+| `post-deploy` | `clear-cache` | `true` | Vyčistit cache |
+| `post-deploy` | `restart-workers` | `false` | Restartovat Supervisor workers |
+| `post-deploy` | `custom-commands` | `[]` | Vlastní příkazy po deploy |
 
 ### Secrets
 
