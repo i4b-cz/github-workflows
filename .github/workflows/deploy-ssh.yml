@@ -18,11 +18,13 @@ on:
         # Expected structure:
         # {
         #   "backend": { "enabled": true, "path": "./backend", "rsync-exclude": [...], "public-includes": ["index.php", ".htaccess", "cron/"] },
-        #   "frontend": { "enabled": true, "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/", "rsync-exclude": [...], "env-vars": true },
+        #   "frontend": { "enabled": true, "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/", "rsync-exclude": [...] },
         #   "backup": { "enabled": false, "database": true, "commit-hash": true },
         #   "health-check": { "enabled": true, "url": "/api/config", "verify-production-mode": false },
         #   "post-deploy": { "composer-install": true, "run-migrations": true, "clear-cache": true, "restart-workers": false, "custom-commands": [] }
         # }
+        #
+        # Note: .env files are auto-generated from GitHub Secrets/Variables with ENV_ prefix.
 
     secrets:
       SSH_KEY:
@@ -56,7 +58,6 @@ jobs:
           echo "frontend-path=$(echo "$CONFIG" | jq -r '.frontend.path // "./frontend"')" >> $GITHUB_OUTPUT
           echo "frontend-build-command=$(echo "$CONFIG" | jq -r '.frontend["build-command"] // "npm run build"')" >> $GITHUB_OUTPUT
           echo "frontend-deploy-to=$(echo "$CONFIG" | jq -r '.frontend["deploy-to"] // "backend/public/"')" >> $GITHUB_OUTPUT
-          echo "frontend-env-vars=$(echo "$CONFIG" | jq -r '.frontend["env-vars"] // true')" >> $GITHUB_OUTPUT
 
           # Backup config
           echo "backup-enabled=$(echo "$CONFIG" | jq -r '.backup.enabled // false')" >> $GITHUB_OUTPUT
@@ -80,6 +81,47 @@ jobs:
           echo "$CONFIG" | jq -r '.frontend["post-build-commands"] // [] | .[]' > /tmp/post-build-commands.txt
           echo "$CONFIG" | jq -r '.["post-deploy"]["custom-commands"] // [] | .[]' > /tmp/custom-commands.txt
 
+      - name: Generate .env files from ENV_ prefixed variables
+        env:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+          BACKEND_PATH: ${{ steps.config.outputs.backend-path }}
+          FRONTEND_PATH: ${{ steps.config.outputs.frontend-path }}
+          FRONTEND_ENABLED: ${{ steps.config.outputs.frontend-enabled }}
+          BACKEND_ENABLED: ${{ steps.config.outputs.backend-enabled }}
+        run: |
+          # Function to extract ENV_* variables and strip prefix
+          extract_env_vars() {
+            local json="$1"
+            echo "$json" | jq -r '
+              to_entries[]
+              | select(.key | startswith("ENV_"))
+              | "\(.key | sub("^ENV_"; ""))=\(.value)"
+            '
+          }
+
+          # Generate backend .env.local
+          if [ "$BACKEND_ENABLED" == "true" ]; then
+            echo "→ Generating backend .env.local..."
+            {
+              extract_env_vars "$VARS_CONTEXT"
+              extract_env_vars "$SECRETS_CONTEXT"
+            } > "$BACKEND_PATH/.env.local"
+            VAR_COUNT=$(wc -l < "$BACKEND_PATH/.env.local" | tr -d ' ')
+            echo "✓ Generated $BACKEND_PATH/.env.local with $VAR_COUNT variables"
+          fi
+
+          # Generate frontend .env.production
+          if [ "$FRONTEND_ENABLED" == "true" ]; then
+            echo "→ Generating frontend .env.production..."
+            {
+              extract_env_vars "$VARS_CONTEXT"
+              extract_env_vars "$SECRETS_CONTEXT"
+            } > "$FRONTEND_PATH/.env.production"
+            VAR_COUNT=$(wc -l < "$FRONTEND_PATH/.env.production" | tr -d ' ')
+            echo "✓ Generated $FRONTEND_PATH/.env.production with $VAR_COUNT variables"
+          fi
+
       - name: Setup Node.js
         if: steps.config.outputs.frontend-enabled == 'true'
         uses: actions/setup-node@v4
@@ -97,19 +139,8 @@ jobs:
         if: steps.config.outputs.frontend-enabled == 'true'
         working-directory: ${{ steps.config.outputs.frontend-path }}
         env:
-          VITE_API_BASE_URL: ${{ vars.API_URL }}
-          VITE_API_KEY: ${{ secrets.API_KEY }}
           BUILD_COMMAND: ${{ steps.config.outputs.frontend-build-command }}
-          CREATE_ENV_VARS: ${{ steps.config.outputs.frontend-env-vars }}
         run: |
-          # Create .env.production with VITE variables (optional, enabled by default)
-          if [ "$CREATE_ENV_VARS" == "true" ]; then
-            echo "VITE_API_BASE_URL=$VITE_API_BASE_URL" > .env.production
-            if [ -n "$VITE_API_KEY" ]; then
-              echo "VITE_API_KEY=$VITE_API_KEY" >> .env.production
-            fi
-          fi
-
           # Run build (command from config via env var for safety)
           echo "→ Running: $BUILD_COMMAND"
           $BUILD_COMMAND
@@ -133,34 +164,11 @@ jobs:
           path: ./deploy-artifacts
         continue-on-error: true
 
-      - name: Move artifacts to correct locations
+      - name: Move JWT keys from artifacts
         run: |
-          echo "→ Looking for deployment artifacts..."
-          echo "  Backend path: ${{ steps.config.outputs.backend-path }}"
+          echo "→ Looking for JWT keys in artifacts..."
 
           if [ -d "./deploy-artifacts" ]; then
-            echo "  Artifact directory contents:"
-            find ./deploy-artifacts -type f | head -20
-
-            # Move .env.local if exists (preferred for Symfony)
-            if [ -f "./deploy-artifacts/backend/.env.local" ]; then
-              cp ./deploy-artifacts/backend/.env.local ${{ steps.config.outputs.backend-path }}/.env.local
-              echo "✓ Copied .env.local from backend/"
-            elif [ -f "./deploy-artifacts/.env.local" ]; then
-              cp ./deploy-artifacts/.env.local ${{ steps.config.outputs.backend-path }}/.env.local
-              echo "✓ Copied .env.local from root"
-            # Fallback to .env.prod.local for backwards compatibility
-            elif [ -f "./deploy-artifacts/backend/.env.prod.local" ]; then
-              cp ./deploy-artifacts/backend/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.local
-              echo "✓ Copied .env.prod.local as .env.local from backend/"
-            elif [ -f "./deploy-artifacts/.env.prod.local" ]; then
-              cp ./deploy-artifacts/.env.prod.local ${{ steps.config.outputs.backend-path }}/.env.local
-              echo "✓ Copied .env.prod.local as .env.local from root"
-            else
-              echo "⚠ No .env.local or .env.prod.local found in artifacts"
-            fi
-
-            # Move JWT keys if exist
             if [ -d "./deploy-artifacts/backend/config/jwt" ]; then
               mkdir -p ${{ steps.config.outputs.backend-path }}/config/jwt
               cp ./deploy-artifacts/backend/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
@@ -170,10 +178,10 @@ jobs:
               cp ./deploy-artifacts/config/jwt/*.pem ${{ steps.config.outputs.backend-path }}/config/jwt/ 2>/dev/null || true
               echo "✓ Copied JWT keys from config/jwt/"
             else
-              echo "⚠ No JWT keys found in artifacts"
+              echo "⚠ No JWT keys found in artifacts (this may be expected)"
             fi
           else
-            echo "⚠ No deploy-artifacts directory found (artifact download may have failed)"
+            echo "⚠ No deploy-artifacts directory found (this may be expected if no JWT keys are used)"
           fi
 
       - name: Configure SSH

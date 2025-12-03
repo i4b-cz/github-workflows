@@ -190,23 +190,7 @@ Generický SSH deploy via rsync s podporou backup a health checků.
 
 ```yaml
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Create .env.prod.local
-        run: |
-          cat > backend/.env.prod.local << 'EOF'
-          APP_SECRET=${{ secrets.APP_SECRET }}
-          DATABASE_URL=${{ secrets.DATABASE_URL }}
-          EOF
-      - uses: actions/upload-artifact@v4
-        with:
-          name: deploy-config
-          path: backend/.env.prod.local
-
   deploy:
-    needs: prepare
     uses: i4b-cz/github-workflows/.github/workflows/deploy-ssh.yml@v1
     with:
       environment: staging
@@ -225,6 +209,9 @@ jobs:
     secrets:
       SSH_KEY: ${{ secrets.SSH_KEY }}
 ```
+
+> **Poznámka:** `.env` soubory jsou automaticky generovány z GitHub Secrets/Variables
+> s prefixem `ENV_`. Viz sekce [Environment Variables (.env)](#environment-variables-env).
 
 ### Inputs
 
@@ -250,8 +237,7 @@ jobs:
     "build-command": "npm run build",
     "post-build-commands": ["cp .htaccess.production dist/.htaccess"],
     "deploy-to": "backend/public/",
-    "rsync-exclude": ["index.php", "cron/", ".htaccess"],
-    "env-vars": true
+    "rsync-exclude": ["index.php", "cron/", ".htaccess"]
   },
   "backup": {
     "enabled": true,
@@ -287,7 +273,6 @@ jobs:
 | `frontend` | `post-build-commands` | `[]` | Příkazy po buildu |
 | `frontend` | `deploy-to` | `"backend/public/"` | Cílová složka pro frontend |
 | `frontend` | `rsync-exclude` | `[]` | Soubory vyloučené z frontend deploy |
-| `frontend` | `env-vars` | `true` | Vytvořit .env.production s VITE_* proměnnými |
 | `backup` | `enabled` | `false` | Povolit backup před deploy |
 | `backup` | `database` | `true` | Zálohovat databázi |
 | `health-check` | `enabled` | `true` | Povolit health check po deploy |
@@ -299,20 +284,45 @@ jobs:
 | `post-deploy` | `restart-workers` | `false` | Restartovat Supervisor workers |
 | `post-deploy` | `custom-commands` | `[]` | Vlastní příkazy po deploy |
 
+### Environment Variables (.env)
+
+Workflow automaticky generuje `.env.local` (backend) a `.env.production` (frontend)
+ze všech GitHub Secrets a Variables s prefixem `ENV_`.
+
+**Příklad nastavení v GitHub Settings → Secrets and variables → Actions:**
+
+| Název | Typ | Výsledek v .env |
+|-------|-----|-----------------|
+| `ENV_DATABASE_URL` | Secret | `DATABASE_URL=...` |
+| `ENV_APP_SECRET` | Secret | `APP_SECRET=...` |
+| `ENV_VITE_API_URL` | Variable | `VITE_API_URL=...` |
+| `ENV_MAILER_DSN` | Secret | `MAILER_DSN=...` |
+| `SSH_HOST` | Variable | *(pouze pro CI, nejde do .env)* |
+
+**Pravidla:**
+- Prefix `ENV_` je automaticky oříznut
+- Secrets i Variables jdou do stejného .env souboru
+- Secrets přepíší Variables při konfliktu názvů (secrets jsou zpracovány jako poslední)
+- Hodnoty secrets jsou v logách automaticky maskovány GitHubem
+
 ### Secrets
 
 - `SSH_KEY` (required) - SSH private key
 
-### Environment Variables
+### CI Environment Variables
 
 Nastavte v GitHub environment (Settings → Environments):
 
-- `SSH_HOST` - SSH server hostname
-- `SSH_USER` - SSH username
-- `SSH_PORT` - SSH port (default 22)
-- `REMOTE_PATH` - Cesta na serveru
-- `APP_URL` - URL aplikace (pro health check)
-- `API_URL` - API URL (pro frontend build jako VITE_API_BASE_URL)
+| Proměnná | Popis |
+|----------|-------|
+| `SSH_HOST` | SSH server hostname |
+| `SSH_USER` | SSH username |
+| `SSH_PORT` | SSH port (default 22) |
+| `REMOTE_PATH` | Cesta na serveru |
+| `APP_URL` | URL aplikace (pro health check) |
+
+> **Poznámka:** Tyto proměnné NEMAJÍ prefix `ENV_` - jsou určeny pouze pro CI workflow,
+> ne pro runtime aplikace.
 
 ---
 
