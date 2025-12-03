@@ -238,6 +238,8 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
             --exclude='index.php' \
             --exclude='cron/' \
+            --exclude='.htaccess' \
+            --exclude='img/' \
             ${{ steps.config.outputs.frontend-path }}/dist/ \
             $SSH_USER@$SSH_HOST:$REMOTE_PATH/${{ steps.config.outputs.frontend-deploy-to }}
 
@@ -270,6 +272,22 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
             "$BACKEND_PATH/public/index.php" \
             "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/index.php"
+
+          # Deploy public/.htaccess if exists
+          if [ -f "$BACKEND_PATH/public/.htaccess" ]; then
+            rsync -avz \
+              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+              "$BACKEND_PATH/public/.htaccess" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/.htaccess"
+          fi
+
+          # Deploy public/img if exists
+          if [ -d "$BACKEND_PATH/public/img" ]; then
+            rsync -avz \
+              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+              "$BACKEND_PATH/public/img/" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/backend/public/img/"
+          fi
 
           # Deploy public/cron if exists
           if [ -d "$BACKEND_PATH/public/cron" ]; then
