@@ -74,7 +74,6 @@ jobs:
 
             Use `gh pr comment $GITHUB_EVENT_PULL_REQUEST_NUMBER --body "YOUR_REVIEW_HERE"` to post your review.' }}
 
-          claude_args: |
-            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh search:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*)"
+          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh search:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*)"'
         env:
           GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
