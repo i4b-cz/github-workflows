@@ -14,8 +14,11 @@ on:
 
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        description: 'Claude Code OAuth token'
-        required: true
+        description: 'Claude Code OAuth token (use this OR ANTHROPIC_API_KEY)'
+        required: false
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key (use this OR CLAUDE_CODE_OAUTH_TOKEN)'
+        required: false
 
 jobs:
   claude-review:
@@ -40,6 +43,7 @@ jobs:
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
