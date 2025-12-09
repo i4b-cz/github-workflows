@@ -401,32 +401,47 @@ jobs:
           HEALTH_URL: ${{ steps.config.outputs.healthcheck-url }}
           VERIFY_PRODUCTION: ${{ steps.config.outputs.healthcheck-verify-production }}
         run: |
-          sleep 5
-
           FULL_URL="${APP_URL}${HEALTH_URL}"
           echo "→ Checking $FULL_URL..."
 
-          HTTP_CODE=$(curl -s -o /tmp/health_response.txt -w "%{http_code}" "$FULL_URL")
+          MAX_RETRIES=5
+          RETRY_DELAY=5
+          SUCCESS=false
 
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✓ API is healthy (HTTP $HTTP_CODE)"
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_CODE=$(curl -s -o /tmp/health_response.txt -w "%{http_code}" \
+              -H "Accept: application/json" "$FULL_URL")
 
-            # Verify production mode if enabled
-            if [ "$VERIFY_PRODUCTION" == "true" ]; then
-              RESPONSE=$(cat /tmp/health_response.txt)
-              TESTING_MODE=$(echo "$RESPONSE" | grep -o '"testing_mode":[^,}]*' | cut -d':' -f2 | tr -d ' ')
-
-              if [ "$TESTING_MODE" = "false" ]; then
-                echo "✓ Production mode confirmed (testing_mode: false)"
-              else
-                echo "✗ WARNING: testing_mode is not false!"
-                exit 1
-              fi
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ API is healthy (HTTP $HTTP_CODE)"
+              SUCCESS=true
+              break
             fi
-          else
-            echo "✗ Health check failed (HTTP $HTTP_CODE)"
+
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "⚠ Attempt $i/$MAX_RETRIES failed (HTTP $HTTP_CODE), retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+          done
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo "✗ Health check failed after $MAX_RETRIES attempts (HTTP $HTTP_CODE)"
             cat /tmp/health_response.txt
             exit 1
+          fi
+
+          # Verify production mode if enabled
+          if [ "$VERIFY_PRODUCTION" == "true" ]; then
+            RESPONSE=$(cat /tmp/health_response.txt)
+            TESTING_MODE=$(echo "$RESPONSE" | grep -o '"testing_mode":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+
+            if [ "$TESTING_MODE" = "false" ]; then
+              echo "✓ Production mode confirmed (testing_mode: false)"
+            else
+              echo "✗ WARNING: testing_mode is not false!"
+              exit 1
+            fi
           fi
 
           # Check frontend
