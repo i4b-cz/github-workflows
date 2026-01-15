@@ -118,15 +118,15 @@ jobs:
             echo "✓ Generated $BACKEND_PATH/.env.local with $VAR_COUNT variables"
           fi
 
-          # Generate frontend .env.production
+          # Generate frontend .env.local (loaded for all modes: dev, staging, production)
           if [ "$FRONTEND_ENABLED" == "true" ]; then
-            echo "→ Generating frontend .env.production..."
+            echo "→ Generating frontend .env.local..."
             {
               extract_env_vars "$VARS_CONTEXT"
               extract_env_vars "$SECRETS_CONTEXT"
-            } > "$FRONTEND_PATH/.env.production"
-            VAR_COUNT=$(wc -l < "$FRONTEND_PATH/.env.production" | tr -d ' ')
-            echo "✓ Generated $FRONTEND_PATH/.env.production with $VAR_COUNT variables"
+            } > "$FRONTEND_PATH/.env.local"
+            VAR_COUNT=$(wc -l < "$FRONTEND_PATH/.env.local" | tr -d ' ')
+            echo "✓ Generated $FRONTEND_PATH/.env.local with $VAR_COUNT variables"
           fi
 
       - name: Setup Node.js
