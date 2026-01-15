@@ -1,0 +1,186 @@
+name: Create Release PR
+
+on:
+  workflow_call:
+    inputs:
+      base-branch:
+        description: 'Target branch for release (usually main)'
+        type: string
+        default: 'main'
+      head-branch:
+        description: 'Source branch for release (usually develop)'
+        type: string
+        default: 'develop'
+      staging-url:
+        description: 'Staging URL to include in release notes (optional)'
+        type: string
+        default: ''
+      version-prefix:
+        description: 'Prefix for version tags (e.g., "v" for v2025.1.1)'
+        type: string
+        default: ''
+
+jobs:
+  create-release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for existing PR
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXISTING_PR=$(gh pr list --base ${{ inputs.base-branch }} --head ${{ inputs.head-branch }} --state open --json number --jq '.[0].number // empty')
+          echo "existing_pr=$EXISTING_PR" >> $GITHUB_OUTPUT
+
+      - name: Calculate CalVer version
+        id: version
+        run: |
+          # CalVer format: YYYY.MM.PATCH (with optional prefix)
+          YEAR=$(date +%Y)
+          MONTH=$(date +%-m)
+          PREFIX="${{ inputs.version-prefix }}${YEAR}.${MONTH}"
+
+          # Find the latest tag matching current month
+          LATEST_TAG=$(git tag --list "${PREFIX}.*" --sort=-v:refname | head -n1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            # No tag for this month yet, start with .1
+            NEW_VERSION="${PREFIX}.1"
+          else
+            # Extract patch number and increment
+            PATCH=$(echo "$LATEST_TAG" | sed "s/${PREFIX}\.//")
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${PREFIX}.${NEW_PATCH}"
+          fi
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Calculated version: $NEW_VERSION"
+
+      - name: Generate release notes
+        id: release-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_URL: ${{ inputs.staging-url }}
+        run: |
+          # Get commits on head branch that are not on base branch
+          COMMITS=$(git log origin/${{ inputs.base-branch }}..origin/${{ inputs.head-branch }} --pretty=format:"%s" --reverse)
+
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits"
+            echo "has_commits=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "has_commits=true" >> $GITHUB_OUTPUT
+
+          # Extract PR numbers from commits (newline-separated)
+          # Matches both "Merge pull request #123" and "feat: Something (#123)"
+          echo "$COMMITS" | grep -oE '#[0-9]+' | tr -d '#' | sort -u > /tmp/pr_numbers.txt
+
+          # Collect linked issues from PRs
+          > /tmp/issue_numbers.txt
+          while read -r PR_NUM; do
+            [ -z "$PR_NUM" ] && continue
+            # Get PR body and extract linked issues (Fixes #XX, Closes #XX, Resolves #XX)
+            PR_BODY=$(gh pr view "$PR_NUM" --json body --jq '.body // ""' 2>/dev/null || echo "")
+            echo "$PR_BODY" | grep -oiE '(fixes|closes|resolves|fix|close|resolve)\s*#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' >> /tmp/issue_numbers.txt
+          done < /tmp/pr_numbers.txt
+
+          # Get unique issue numbers
+          sort -u /tmp/issue_numbers.txt > /tmp/unique_issues.txt
+
+          # Build release notes
+          {
+            echo "## Issues in this release"
+            echo ""
+
+            if [ -s /tmp/unique_issues.txt ]; then
+              while read -r ISSUE_NUM; do
+                [ -z "$ISSUE_NUM" ] && continue
+                # Get issue details via GitHub API
+                ISSUE_DATA=$(gh issue view "$ISSUE_NUM" --json title,state,labels 2>/dev/null || echo "")
+
+                if [ -n "$ISSUE_DATA" ]; then
+                  TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
+                  STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
+                  LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+
+                  # Determine status indicator
+                  if echo "$LABELS" | grep -qi "ready.for.release\|ready-for-release\|ready to release"; then
+                    STATUS="✅"
+                  elif echo "$LABELS" | grep -qi "staging"; then
+                    STATUS="🔄"
+                  elif [ "$STATE" = "CLOSED" ]; then
+                    STATUS="✅"
+                  else
+                    STATUS="🔄"
+                  fi
+
+                  # Format labels for display
+                  if [ -n "$LABELS" ]; then
+                    LABEL_DISPLAY=" \`$LABELS\`"
+                  else
+                    LABEL_DISPLAY=""
+                  fi
+
+                  echo "- ${STATUS} #${ISSUE_NUM} ${TITLE}${LABEL_DISPLAY}"
+                fi
+              done < /tmp/unique_issues.txt
+            else
+              echo "*No linked issues found in PRs*"
+            fi
+
+            echo ""
+            echo "<details>"
+            echo "<summary>Pull Requests ($(wc -l < /tmp/pr_numbers.txt | tr -d ' '))</summary>"
+            echo ""
+            while read -r PR_NUM; do
+              [ -z "$PR_NUM" ] && continue
+              PR_TITLE=$(gh pr view "$PR_NUM" --json title --jq '.title' 2>/dev/null || echo "PR #$PR_NUM")
+              echo "- #${PR_NUM} ${PR_TITLE}"
+            done < /tmp/pr_numbers.txt
+            echo ""
+            echo "</details>"
+
+            echo ""
+            echo "<details>"
+            echo "<summary>Commits ($(echo "$COMMITS" | wc -l))</summary>"
+            echo ""
+            echo "$COMMITS" | while read -r line; do echo "- $line"; done
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "---"
+
+            if [ -n "$STAGING_URL" ]; then
+              echo "*Staging:* $STAGING_URL"
+              echo ""
+            fi
+
+            echo "*Auto-generated from ${{ inputs.head-branch }} branch*"
+          } > /tmp/release-notes.md
+
+      - name: Create PR
+        if: steps.check-pr.outputs.existing_pr == '' && steps.release-notes.outputs.has_commits == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base ${{ inputs.base-branch }} \
+            --head ${{ inputs.head-branch }} \
+            --title "Release ${{ steps.version.outputs.version }}" \
+            --body-file /tmp/release-notes.md
+
+      - name: Update existing PR
+        if: steps.check-pr.outputs.existing_pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit ${{ steps.check-pr.outputs.existing_pr }} \
+            --title "Release ${{ steps.version.outputs.version }}" \
+            --body-file /tmp/release-notes.md
