@@ -216,20 +216,22 @@ jobs:
             echo "✓ Generated $BACKEND_PATH/.env.local with $VAR_COUNT variables"
           fi
 
-          # Generate frontend .env.production files
+          # Generate frontend .env.local files
+          # Using .env.local because it has highest priority in Vite regardless of --mode
+          # (Vite loads .env.local before .env.{mode}, and .env.local is never overridden)
           if [ "$FRONTENDS_ENABLED" == "true" ]; then
             while read -r frontend; do
               FPATH=$(echo "$frontend" | jq -r '.path')
               FNAME=$(echo "$frontend" | jq -r '.name // "default"')
               FPREFIX=$(echo "$FNAME" | tr '[:lower:]' '[:upper:]')
 
-              echo "→ Generating $FPATH/.env.production (name: $FNAME)..."
+              echo "→ Generating $FPATH/.env.local (name: $FNAME)..."
 
               # Common ENV_* vars (excluding any per-frontend prefixed vars)
               {
                 extract_common_env_vars "$VARS_CONTEXT"
                 extract_common_env_vars "$SECRETS_CONTEXT"
-              } > "$FPATH/.env.production"
+              } > "$FPATH/.env.local"
 
               # Per-frontend prefixed vars override common ones
               if [ "$FPREFIX" != "DEFAULT" ]; then
@@ -245,15 +247,15 @@ jobs:
                     | select(.key | startswith($pfx))
                     | "\(.key | sub("^" + $pfx; ""))=\(.value)"
                   '
-                } >> "$FPATH/.env.production"
+                } >> "$FPATH/.env.local"
 
                 # Deduplicate: keep last occurrence so prefixed vars truly override common ones
-                tac "$FPATH/.env.production" | awk -F= '!seen[$1]++' | tac > "$FPATH/.env.production.tmp"
-                mv "$FPATH/.env.production.tmp" "$FPATH/.env.production"
+                tac "$FPATH/.env.local" | awk -F= '!seen[$1]++' | tac > "$FPATH/.env.local.tmp"
+                mv "$FPATH/.env.local.tmp" "$FPATH/.env.local"
               fi
 
-              VAR_COUNT=$(wc -l < "$FPATH/.env.production" | tr -d ' ')
-              echo "✓ Generated $FPATH/.env.production with $VAR_COUNT variables"
+              VAR_COUNT=$(wc -l < "$FPATH/.env.local" | tr -d ' ')
+              echo "✓ Generated $FPATH/.env.local with $VAR_COUNT variables"
             done < <(jq -c '.[]' /tmp/frontends.json)
           fi
 
