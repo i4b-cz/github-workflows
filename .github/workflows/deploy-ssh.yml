@@ -268,7 +268,10 @@ jobs:
       - name: Install and build frontends
         if: steps.config.outputs.frontends-enabled == 'true'
         run: |
-          while read -r frontend; do
+          # Use for loop instead of while-read to avoid stdin consumption by npm ci
+          FRONTEND_COUNT=$(jq 'length' /tmp/frontends.json)
+          for i in $(seq 0 $((FRONTEND_COUNT - 1))); do
+            frontend=$(jq -c ".[$i]" /tmp/frontends.json)
             FPATH=$(echo "$frontend" | jq -r '.path')
             FNAME=$(echo "$frontend" | jq -r '.name // "default"')
             BUILD_CMD=$(echo "$frontend" | jq -r '.["build-command"] // "npm run build"')
@@ -303,7 +306,7 @@ jobs:
             done < <(echo "$frontend" | jq -r '.["post-build-commands"] // [] | .[]')
 
             echo "✓ Frontend $FNAME built successfully"
-          done < <(jq -c '.[]' /tmp/frontends.json)
+          done
 
       - name: Download deployment artifacts
         uses: actions/download-artifact@v4
@@ -401,7 +404,9 @@ jobs:
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ vars.REMOTE_PATH }}
         run: |
-          while read -r frontend; do
+          FRONTEND_COUNT=$(jq 'length' /tmp/frontends.json)
+          for i in $(seq 0 $((FRONTEND_COUNT - 1))); do
+            frontend=$(jq -c ".[$i]" /tmp/frontends.json)
             FPATH=$(echo "$frontend" | jq -r '.path')
             FNAME=$(echo "$frontend" | jq -r '.name // "default"')
             DEPLOY_TO=$(echo "$frontend" | jq -r '.["deploy-to"] // "backend/public/"')
@@ -423,7 +428,7 @@ jobs:
               "$SSH_USER@$SSH_HOST:$REMOTE_PATH/$DEPLOY_TO"
 
             echo "✓ Frontend $FNAME deployed"
-          done < <(jq -c '.[]' /tmp/frontends.json)
+          done
 
       - name: Deploy backend
         if: steps.config.outputs.backend-enabled == 'true'
