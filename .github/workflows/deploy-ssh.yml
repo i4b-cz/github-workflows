@@ -24,10 +24,27 @@ on:
         # {
         #   "backend": { "enabled": true, "path": "./backend", "rsync-exclude": [...], "public-includes": ["index.php", ".htaccess", "cron/"] },
         #   "frontend": { "enabled": true, "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/", "rsync-exclude": [...] },
+        #   -- OR (multi-frontend) --
+        #   "frontends": [
+        #     { "name": "public", "path": "./frontend", "build-command": "npm run build", "post-build-commands": [...], "deploy-to": "backend/public/", "rsync-exclude": [...] },
+        #     { "name": "admin", "path": "./frontend-admin", "build-command": "npm run build", "deploy-to": "backend/public/admin/", "rsync-exclude": [] }
+        #   ],
+        #   Note: "name" must be a non-empty alphanumeric string. The name "default" is reserved
+        #   for legacy mode — a frontend named "default" receives only common ENV_* vars and
+        #   cannot have its own prefix. Avoid using "default" in multi-frontend configs.
+        #   To disable a frontend in multi-frontend mode, remove it from the array.
+        #
         #   "backup": { "enabled": false, "database": true, "commit-hash": true },
         #   "health-check": { "enabled": true, "url": "/api/config", "verify-production-mode": false },
         #   "post-deploy": { "composer-install": true, "run-migrations": true, "clear-cache": true, "restart-workers": false, "custom-commands": [] }
         # }
+        #
+        # Multi-frontend .env convention:
+        #   ENV_*        → all frontends (common)
+        #   ENV_ADMIN_*  → only frontend with name "admin" (prefix stripped, e.g. ENV_ADMIN_VITE_FOO → VITE_FOO)
+        #   ENV_PUBLIC_* → only frontend with name "public"
+        #   Prefixed vars override common vars with the same key (deduplication applied).
+        #   Note: Backend .env.local receives ALL ENV_* vars unfiltered (prefix scoping is frontend-only).
         #
         # Note: .env files are auto-generated from GitHub Secrets/Variables with ENV_ prefix.
 
@@ -60,11 +77,65 @@ jobs:
           echo "backend-enabled=$(echo "$CONFIG" | jq -r '.backend.enabled // true')" >> $GITHUB_OUTPUT
           echo "backend-path=$(echo "$CONFIG" | jq -r '.backend.path // "./backend"')" >> $GITHUB_OUTPUT
 
-          # Frontend config
-          echo "frontend-enabled=$(echo "$CONFIG" | jq -r '.frontend.enabled // true')" >> $GITHUB_OUTPUT
-          echo "frontend-path=$(echo "$CONFIG" | jq -r '.frontend.path // "./frontend"')" >> $GITHUB_OUTPUT
-          echo "frontend-build-command=$(echo "$CONFIG" | jq -r '.frontend["build-command"] // "npm run build"')" >> $GITHUB_OUTPUT
-          echo "frontend-deploy-to=$(echo "$CONFIG" | jq -r '.frontend["deploy-to"] // "backend/public/"')" >> $GITHUB_OUTPUT
+          # Normalize frontend config: "frontends" array or legacy "frontend" object → /tmp/frontends.json
+          HAS_FRONTENDS=$(echo "$CONFIG" | jq 'has("frontends")')
+          HAS_FRONTEND=$(echo "$CONFIG" | jq 'has("frontend")')
+
+          if [ "$HAS_FRONTENDS" == "true" ]; then
+            # Multi-frontend mode — filter out disabled entries
+            echo "$CONFIG" | jq '[.frontends[] | select(.enabled != false)]' > /tmp/frontends.json
+          elif [ "$HAS_FRONTEND" == "true" ]; then
+            # Legacy single-frontend mode — wrap in array
+            ENABLED=$(echo "$CONFIG" | jq -r '.frontend.enabled // true')
+            if [ "$ENABLED" == "true" ]; then
+              echo "$CONFIG" | jq '[.frontend + {"name": (.frontend.name // "default")}]' > /tmp/frontends.json
+            else
+              echo '[]' > /tmp/frontends.json
+            fi
+          else
+            # No frontend config at all — default to single frontend at ./frontend (backward compat)
+            echo '[{"name":"default","path":"./frontend","build-command":"npm run build","deploy-to":"backend/public/","rsync-exclude":[]}]' > /tmp/frontends.json
+          fi
+
+          # Validate frontends.json is a JSON array with required fields
+          if ! jq -e 'type == "array"' /tmp/frontends.json > /dev/null 2>&1; then
+            echo "::error::frontends.json is not a valid JSON array"
+            cat /tmp/frontends.json
+            exit 1
+          fi
+          INVALID=$(jq '[.[] | select(.path == null or .path == "")] | length' /tmp/frontends.json)
+          if [ "$INVALID" -gt 0 ]; then
+            echo "::error::$INVALID frontend entries are missing the required 'path' field"
+            exit 1
+          fi
+
+          FRONTEND_COUNT=$(jq 'length' /tmp/frontends.json)
+          echo "frontend-count=$FRONTEND_COUNT" >> $GITHUB_OUTPUT
+          echo "frontends-enabled=$([ "$FRONTEND_COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+          # Emit legacy output names for backward compatibility (single-frontend only)
+          if [ "$FRONTEND_COUNT" -eq 1 ]; then
+            echo "frontend-enabled=true" >> $GITHUB_OUTPUT
+            echo "frontend-path=$(jq -r '.[0].path' /tmp/frontends.json)" >> $GITHUB_OUTPUT
+            echo "frontend-build-command=$(jq -r '.[0]["build-command"] // "npm run build"' /tmp/frontends.json)" >> $GITHUB_OUTPUT
+            echo "frontend-deploy-to=$(jq -r '.[0]["deploy-to"] // "backend/public/"' /tmp/frontends.json)" >> $GITHUB_OUTPUT
+          elif [ "$FRONTEND_COUNT" -eq 0 ]; then
+            echo "frontend-enabled=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Generate cache-dependency-path (newline-separated list of package-lock.json paths)
+          while read -r fpath; do
+            if [ -n "$fpath" ]; then
+              echo "$fpath/package-lock.json"
+            fi
+          done < <(jq -r '.[].path // empty' /tmp/frontends.json) > /tmp/cache-paths.txt
+          # Store as multi-line GitHub output using heredoc delimiter
+          CACHE_PATHS=$(paste -sd $'\n' /tmp/cache-paths.txt)
+          {
+            echo "cache-dependency-paths<<CACHE_EOF"
+            echo "$CACHE_PATHS"
+            echo "CACHE_EOF"
+          } >> $GITHUB_OUTPUT
 
           # Backup config
           echo "backup-enabled=$(echo "$CONFIG" | jq -r '.backup.enabled // false')" >> $GITHUB_OUTPUT
@@ -81,24 +152,35 @@ jobs:
           echo "postdeploy-cache=$(echo "$CONFIG" | jq -r '.["post-deploy"]["clear-cache"] // true')" >> $GITHUB_OUTPUT
           echo "postdeploy-workers=$(echo "$CONFIG" | jq -r '.["post-deploy"]["restart-workers"] // false')" >> $GITHUB_OUTPUT
 
+          # Build list of known frontend env prefixes (e.g. "ADMIN", "PUBLIC") for env var filtering
+          jq -r '.[].name // empty' /tmp/frontends.json | tr '[:lower:]' '[:upper:]' | (grep -v -e '^DEFAULT$' -e '^$' || true) | sort -u > /tmp/frontend-prefixes.txt
+          echo "  Frontend env prefixes: $(paste -sd, /tmp/frontend-prefixes.txt || echo '(none)')"
+
           # Store rsync excludes and other config lists as files for later use
           echo "$CONFIG" | jq -r '.backend["rsync-exclude"] // [".git", "node_modules", "vendor", "var/cache", "var/log", "var/pdf", "public/"] | .[]' > /tmp/rsync-excludes.txt
           echo "$CONFIG" | jq -r '.backend["public-includes"] // ["index.php"] | .[]' > /tmp/public-includes.txt
-          echo "$CONFIG" | jq -r '.frontend["rsync-exclude"] // [] | .[]' > /tmp/frontend-rsync-excludes.txt
-          echo "$CONFIG" | jq -r '.frontend["post-build-commands"] // [] | .[]' > /tmp/post-build-commands.txt
           echo "$CONFIG" | jq -r '.["post-deploy"]["custom-commands"] // [] | .[]' > /tmp/custom-commands.txt
+
+          echo "✓ Parsed config: backend=$(echo "$CONFIG" | jq -r '.backend.enabled // true'), frontends=$FRONTEND_COUNT"
 
       - name: Generate .env files from ENV_ prefixed variables
         env:
           SECRETS_CONTEXT: ${{ toJSON(secrets) }}
           VARS_CONTEXT: ${{ toJSON(vars) }}
           BACKEND_PATH: ${{ steps.config.outputs.backend-path }}
-          FRONTEND_PATH: ${{ steps.config.outputs.frontend-path }}
-          FRONTEND_ENABLED: ${{ steps.config.outputs.frontend-enabled }}
           BACKEND_ENABLED: ${{ steps.config.outputs.backend-enabled }}
+          FRONTENDS_ENABLED: ${{ steps.config.outputs.frontends-enabled }}
         run: |
-          # Function to extract ENV_* variables and strip prefix
-          extract_env_vars() {
+          # Build jq exclusion pattern from known frontend prefixes
+          # e.g. if prefixes are ADMIN,PUBLIC → pattern is "^ENV_(ADMIN|PUBLIC)_"
+          EXCLUDE_PATTERN=""
+          if [ -s /tmp/frontend-prefixes.txt ]; then
+            PREFIXES_RE=$(paste -sd'|' /tmp/frontend-prefixes.txt)
+            EXCLUDE_PATTERN="^ENV_(${PREFIXES_RE})_"
+          fi
+
+          # Function to extract ALL ENV_* variables (for backend — no prefix filtering)
+          extract_all_env_vars() {
             local json="$1"
             echo "$json" | jq -r '
               to_entries[]
@@ -107,62 +189,121 @@ jobs:
             '
           }
 
-          # Generate backend .env.local
+          # Function to extract common ENV_* variables (excluding per-frontend prefixed vars)
+          extract_common_env_vars() {
+            local json="$1"
+            if [ -n "$EXCLUDE_PATTERN" ]; then
+              echo "$json" | jq -r --arg pattern "$EXCLUDE_PATTERN" '
+                to_entries[]
+                | select(.key | startswith("ENV_"))
+                | select(.key | test($pattern) | not)
+                | "\(.key | sub("^ENV_"; ""))=\(.value)"
+              '
+            else
+              # No frontend prefixes defined — all ENV_* are common
+              extract_all_env_vars "$json"
+            fi
+          }
+
+          # Generate backend .env.local (receives ALL ENV_* vars, no prefix filtering)
           if [ "$BACKEND_ENABLED" == "true" ]; then
             echo "→ Generating backend .env.local..."
             {
-              extract_env_vars "$VARS_CONTEXT"
-              extract_env_vars "$SECRETS_CONTEXT"
+              extract_all_env_vars "$VARS_CONTEXT"
+              extract_all_env_vars "$SECRETS_CONTEXT"
             } > "$BACKEND_PATH/.env.local"
             VAR_COUNT=$(wc -l < "$BACKEND_PATH/.env.local" | tr -d ' ')
             echo "✓ Generated $BACKEND_PATH/.env.local with $VAR_COUNT variables"
           fi
 
-          # Generate frontend .env.production
-          if [ "$FRONTEND_ENABLED" == "true" ]; then
-            echo "→ Generating frontend .env.production..."
-            {
-              extract_env_vars "$VARS_CONTEXT"
-              extract_env_vars "$SECRETS_CONTEXT"
-            } > "$FRONTEND_PATH/.env.production"
-            VAR_COUNT=$(wc -l < "$FRONTEND_PATH/.env.production" | tr -d ' ')
-            echo "✓ Generated $FRONTEND_PATH/.env.production with $VAR_COUNT variables"
+          # Generate frontend .env.production files
+          if [ "$FRONTENDS_ENABLED" == "true" ]; then
+            while read -r frontend; do
+              FPATH=$(echo "$frontend" | jq -r '.path')
+              FNAME=$(echo "$frontend" | jq -r '.name // "default"')
+              FPREFIX=$(echo "$FNAME" | tr '[:lower:]' '[:upper:]')
+
+              echo "→ Generating $FPATH/.env.production (name: $FNAME)..."
+
+              # Common ENV_* vars (excluding any per-frontend prefixed vars)
+              {
+                extract_common_env_vars "$VARS_CONTEXT"
+                extract_common_env_vars "$SECRETS_CONTEXT"
+              } > "$FPATH/.env.production"
+
+              # Per-frontend prefixed vars override common ones
+              if [ "$FPREFIX" != "DEFAULT" ]; then
+                FULL_PREFIX="ENV_${FPREFIX}_"
+                {
+                  echo "$VARS_CONTEXT" | jq -r --arg pfx "$FULL_PREFIX" '
+                    to_entries[]
+                    | select(.key | startswith($pfx))
+                    | "\(.key | sub("^" + $pfx; ""))=\(.value)"
+                  '
+                  echo "$SECRETS_CONTEXT" | jq -r --arg pfx "$FULL_PREFIX" '
+                    to_entries[]
+                    | select(.key | startswith($pfx))
+                    | "\(.key | sub("^" + $pfx; ""))=\(.value)"
+                  '
+                } >> "$FPATH/.env.production"
+
+                # Deduplicate: keep last occurrence so prefixed vars truly override common ones
+                tac "$FPATH/.env.production" | awk -F= '!seen[$1]++' | tac > "$FPATH/.env.production.tmp"
+                mv "$FPATH/.env.production.tmp" "$FPATH/.env.production"
+              fi
+
+              VAR_COUNT=$(wc -l < "$FPATH/.env.production" | tr -d ' ')
+              echo "✓ Generated $FPATH/.env.production with $VAR_COUNT variables"
+            done < <(jq -c '.[]' /tmp/frontends.json)
           fi
 
       - name: Setup Node.js
-        if: steps.config.outputs.frontend-enabled == 'true'
+        if: steps.config.outputs.frontends-enabled == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
           cache: 'npm'
-          cache-dependency-path: ${{ steps.config.outputs.frontend-path }}/package-lock.json
+          cache-dependency-path: ${{ steps.config.outputs.cache-dependency-paths }}
 
-      - name: Install frontend dependencies
-        if: steps.config.outputs.frontend-enabled == 'true'
-        working-directory: ${{ steps.config.outputs.frontend-path }}
-        run: npm ci
-
-      - name: Build frontend
-        if: steps.config.outputs.frontend-enabled == 'true'
-        working-directory: ${{ steps.config.outputs.frontend-path }}
-        env:
-          BUILD_COMMAND: ${{ steps.config.outputs.frontend-build-command }}
+      - name: Install and build frontends
+        if: steps.config.outputs.frontends-enabled == 'true'
         run: |
-          # Run build (command from config via env var for safety)
-          echo "→ Running: $BUILD_COMMAND"
-          $BUILD_COMMAND
+          while read -r frontend; do
+            FPATH=$(echo "$frontend" | jq -r '.path')
+            FNAME=$(echo "$frontend" | jq -r '.name // "default"')
+            BUILD_CMD=$(echo "$frontend" | jq -r '.["build-command"] // "npm run build"')
 
-          # Run post-build commands (from config file, validated by jq)
-          if [ -s /tmp/post-build-commands.txt ]; then
-            echo "Running post-build commands..."
+            echo "================================================"
+            echo "→ Building frontend: $FNAME ($FPATH)"
+            echo "================================================"
+
+            # Validate frontend path exists
+            if [ ! -d "$FPATH" ]; then
+              echo "::error::Frontend path '$FPATH' does not exist for frontend '$FNAME'"
+              exit 1
+            fi
+
+            # Install and build in a subshell for directory isolation
+            (
+              cd "$FPATH"
+
+              echo "→ Installing dependencies..."
+              npm ci
+
+              echo "→ Running: $BUILD_CMD"
+              bash -c "$BUILD_CMD"
+            )
+
+            # Run post-build commands if defined
             while IFS= read -r cmd; do
               if [ -n "$cmd" ]; then
-                echo "→ $cmd"
-                # Execute command - caller is responsible for safe commands
-                bash -c "$cmd"
+                echo "  → $cmd"
+                (cd "$FPATH" && bash -c "$cmd")
               fi
-            done < /tmp/post-build-commands.txt
-          fi
+            done < <(echo "$frontend" | jq -r '.["post-build-commands"] // [] | .[]')
+
+            echo "✓ Frontend $FNAME built successfully"
+          done < <(jq -c '.[]' /tmp/frontends.json)
 
       - name: Download deployment artifacts
         uses: actions/download-artifact@v4
@@ -252,29 +393,37 @@ jobs:
             echo "✓ Backup created: $BACKUP_NAME"
           EOF
 
-      - name: Deploy frontend
-        if: steps.config.outputs.frontend-enabled == 'true'
+      - name: Deploy frontends
+        if: steps.config.outputs.frontends-enabled == 'true'
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
           SSH_USER: ${{ vars.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ vars.REMOTE_PATH }}
         run: |
-          # Build frontend rsync exclude arguments from config
-          FRONTEND_EXCLUDE_ARGS=()
-          if [ -s /tmp/frontend-rsync-excludes.txt ]; then
+          while read -r frontend; do
+            FPATH=$(echo "$frontend" | jq -r '.path')
+            FNAME=$(echo "$frontend" | jq -r '.name // "default"')
+            DEPLOY_TO=$(echo "$frontend" | jq -r '.["deploy-to"] // "backend/public/"')
+
+            echo "→ Deploying frontend: $FNAME → $DEPLOY_TO"
+
+            # Build rsync exclude arguments
+            FRONTEND_EXCLUDE_ARGS=()
             while IFS= read -r exclude; do
               if [ -n "$exclude" ]; then
                 FRONTEND_EXCLUDE_ARGS+=("--exclude=$exclude")
               fi
-            done < /tmp/frontend-rsync-excludes.txt
-          fi
+            done < <(echo "$frontend" | jq -r '.["rsync-exclude"] // [] | .[]')
 
-          rsync -avz --delete --mkpath \
-            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-            "${FRONTEND_EXCLUDE_ARGS[@]}" \
-            ${{ steps.config.outputs.frontend-path }}/dist/ \
-            $SSH_USER@$SSH_HOST:$REMOTE_PATH/${{ steps.config.outputs.frontend-deploy-to }}
+            rsync -avz --delete --mkpath \
+              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
+              "${FRONTEND_EXCLUDE_ARGS[@]}" \
+              "$FPATH/dist/" \
+              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/$DEPLOY_TO"
+
+            echo "✓ Frontend $FNAME deployed"
+          done < <(jq -c '.[]' /tmp/frontends.json)
 
       - name: Deploy backend
         if: steps.config.outputs.backend-enabled == 'true'
@@ -479,4 +628,4 @@ jobs:
         if: always()
         run: |
           rm -f ~/.ssh/deploy_key
-          rm -f /tmp/rsync-excludes.txt /tmp/public-includes.txt /tmp/frontend-rsync-excludes.txt /tmp/post-build-commands.txt /tmp/custom-commands.txt /tmp/health_response.txt
+          rm -f /tmp/rsync-excludes.txt /tmp/public-includes.txt /tmp/frontends.json /tmp/cache-paths.txt /tmp/frontend-prefixes.txt /tmp/custom-commands.txt /tmp/health_response.txt
