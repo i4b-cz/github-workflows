@@ -212,6 +212,14 @@ jobs:
               extract_all_env_vars "$VARS_CONTEXT"
               extract_all_env_vars "$SECRETS_CONTEXT"
             } > "$BACKEND_PATH/.env.local"
+
+            # Inject the deployed git SHA as SENTRY_RELEASE so Sentry can tag
+            # each event with the exact build (first-seen-in-release, regression
+            # detection, suspect commits). Harmless for projects that don't use
+            # Sentry — it's just an unused env var. Appended last so it wins over
+            # any static ENV_SENTRY_RELEASE value.
+            echo "SENTRY_RELEASE=${GITHUB_SHA}" >> "$BACKEND_PATH/.env.local"
+
             VAR_COUNT=$(wc -l < "$BACKEND_PATH/.env.local" | tr -d ' ')
             echo "✓ Generated $BACKEND_PATH/.env.local with $VAR_COUNT variables"
           fi
