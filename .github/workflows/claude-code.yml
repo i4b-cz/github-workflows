@@ -7,6 +7,10 @@ on:
         description: 'Restrict allowed tools (claude_args format)'
         type: string
         default: ''
+      base-branch:
+        description: 'Branch to check out and to base new Claude branches on (empty = repository default branch)'
+        type: string
+        default: ''
 
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -39,6 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ inputs.base-branch }}
 
       - name: Run Claude Code
         id: claude
@@ -46,6 +51,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: ${{ inputs.base-branch }}
           additional_permissions: |
             actions: read
           claude_args: ${{ inputs.allowed-tools }}
