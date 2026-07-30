@@ -33,7 +33,7 @@ Kompletní PHP CI pipeline zahrnující statickou analýzu a testy.
 ```yaml
 jobs:
   php-ci:
-    uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@main
     with:
       php-version: '8.4'
       working-directory: ./backend
@@ -76,7 +76,7 @@ Kompletní Node.js CI pipeline.
 ```yaml
 jobs:
   node-ci:
-    uses: i4b-cz/github-workflows/.github/workflows/node-ci.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/node-ci.yml@main
     with:
       node-version: '20'
       working-directory: ./frontend
@@ -127,7 +127,7 @@ on:
 
 jobs:
   claude:
-    uses: i4b-cz/github-workflows/.github/workflows/claude-code.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/claude-code.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -163,7 +163,7 @@ on:
 
 jobs:
   review:
-    uses: i4b-cz/github-workflows/.github/workflows/claude-code-review.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/claude-code-review.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -191,7 +191,7 @@ Generický SSH deploy via rsync s podporou backup a health checků.
 ```yaml
 jobs:
   deploy:
-    uses: i4b-cz/github-workflows/.github/workflows/deploy-ssh.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/deploy-ssh.yml@main
     with:
       environment: staging
       deploy-config: |
@@ -328,13 +328,13 @@ Nastavte v GitHub environment (Settings → Environments):
 
 ## Verzování
 
-Doporučujeme používat konkrétní verze:
+Repo nemá tagy — všechny konzumentské repozitáře pinují `@main` a změny se jim propisují okamžitě:
 
 ```yaml
-uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@v1      # Major verze
-uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@v1.2.0  # Konkrétní verze
-uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@main    # Latest (pro vývoj)
+uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@main
 ```
+
+Z toho plyne: změny sdílených workflows musí zachovávat zpětnou kompatibilitu rozhraní `workflow_call` (inputs, secrets, názvy jobů) — jinak je potřeba nejdřív upravit všechny konzumenty. Dočasné pinování feature branche konzumentem je jen přechodný stav; po otestování branch mergni do `main` a pin vrať na `@main`.
 
 ---
 
@@ -370,7 +370,7 @@ jobs:
 
   php-ci:
     needs: setup
-    uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/php-ci.yml@main
     with:
       php-version: '8.4'
       working-directory: ./backend
@@ -378,7 +378,7 @@ jobs:
       coverage: ${{ github.event_name == 'pull_request' }}
 
   node-ci:
-    uses: i4b-cz/github-workflows/.github/workflows/node-ci.yml@v1
+    uses: i4b-cz/github-workflows/.github/workflows/node-ci.yml@main
     with:
       node-version: '20'
       working-directory: ./frontend
