@@ -508,6 +508,10 @@ jobs:
           echo "✓ Backend deployed"
 
       - name: Run post-deploy tasks
+        # All post-deploy tasks run inside the backend directory — nothing to
+        # do for static-only deployments (e.g. the public web), and the
+        # `cd $REMOTE_PATH/backend` would fail there.
+        if: steps.config.outputs.backend-enabled == 'true'
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
           SSH_USER: ${{ vars.SSH_USER }}
