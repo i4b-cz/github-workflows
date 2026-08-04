@@ -74,7 +74,7 @@ jobs:
           CONFIG="$DEPLOY_CONFIG"
 
           # Backend config
-          echo "backend-enabled=$(echo "$CONFIG" | jq -r '.backend.enabled // true')" >> $GITHUB_OUTPUT
+          echo "backend-enabled=$(echo "$CONFIG" | jq -r '.backend.enabled != false')" >> $GITHUB_OUTPUT
           echo "backend-path=$(echo "$CONFIG" | jq -r '.backend.path // "./backend"')" >> $GITHUB_OUTPUT
 
           # Normalize frontend config: "frontends" array or legacy "frontend" object → /tmp/frontends.json
@@ -86,7 +86,7 @@ jobs:
             echo "$CONFIG" | jq '[.frontends[] | select(.enabled != false)]' > /tmp/frontends.json
           elif [ "$HAS_FRONTEND" == "true" ]; then
             # Legacy single-frontend mode — wrap in array
-            ENABLED=$(echo "$CONFIG" | jq -r '.frontend.enabled // true')
+            ENABLED=$(echo "$CONFIG" | jq -r '.frontend.enabled != false')
             if [ "$ENABLED" == "true" ]; then
               echo "$CONFIG" | jq '[.frontend + {"name": (.frontend.name // "default")}]' > /tmp/frontends.json
             else
@@ -139,17 +139,17 @@ jobs:
 
           # Backup config
           echo "backup-enabled=$(echo "$CONFIG" | jq -r '.backup.enabled // false')" >> $GITHUB_OUTPUT
-          echo "backup-database=$(echo "$CONFIG" | jq -r '.backup.database // true')" >> $GITHUB_OUTPUT
+          echo "backup-database=$(echo "$CONFIG" | jq -r '.backup.database != false')" >> $GITHUB_OUTPUT
 
           # Health check config
-          echo "healthcheck-enabled=$(echo "$CONFIG" | jq -r '.["health-check"].enabled // true')" >> $GITHUB_OUTPUT
+          echo "healthcheck-enabled=$(echo "$CONFIG" | jq -r '.["health-check"].enabled != false')" >> $GITHUB_OUTPUT
           echo "healthcheck-url=$(echo "$CONFIG" | jq -r '.["health-check"].url // "/api/config"')" >> $GITHUB_OUTPUT
           echo "healthcheck-verify-production=$(echo "$CONFIG" | jq -r '.["health-check"]["verify-production-mode"] // false')" >> $GITHUB_OUTPUT
 
           # Post-deploy config
-          echo "postdeploy-composer=$(echo "$CONFIG" | jq -r '.["post-deploy"]["composer-install"] // true')" >> $GITHUB_OUTPUT
-          echo "postdeploy-migrations=$(echo "$CONFIG" | jq -r '.["post-deploy"]["run-migrations"] // true')" >> $GITHUB_OUTPUT
-          echo "postdeploy-cache=$(echo "$CONFIG" | jq -r '.["post-deploy"]["clear-cache"] // true')" >> $GITHUB_OUTPUT
+          echo "postdeploy-composer=$(echo "$CONFIG" | jq -r '.["post-deploy"]["composer-install"] != false')" >> $GITHUB_OUTPUT
+          echo "postdeploy-migrations=$(echo "$CONFIG" | jq -r '.["post-deploy"]["run-migrations"] != false')" >> $GITHUB_OUTPUT
+          echo "postdeploy-cache=$(echo "$CONFIG" | jq -r '.["post-deploy"]["clear-cache"] != false')" >> $GITHUB_OUTPUT
           echo "postdeploy-workers=$(echo "$CONFIG" | jq -r '.["post-deploy"]["restart-workers"] // false')" >> $GITHUB_OUTPUT
 
           # Build list of known frontend env prefixes (e.g. "ADMIN", "PUBLIC") for env var filtering
@@ -161,7 +161,7 @@ jobs:
           echo "$CONFIG" | jq -r '.backend["public-includes"] // ["index.php"] | .[]' > /tmp/public-includes.txt
           echo "$CONFIG" | jq -r '.["post-deploy"]["custom-commands"] // [] | .[]' > /tmp/custom-commands.txt
 
-          echo "✓ Parsed config: backend=$(echo "$CONFIG" | jq -r '.backend.enabled // true'), frontends=$FRONTEND_COUNT"
+          echo "✓ Parsed config: backend=$(echo "$CONFIG" | jq -r '.backend.enabled != false'), frontends=$FRONTEND_COUNT"
 
       - name: Generate .env files from ENV_ prefixed variables
         env:
