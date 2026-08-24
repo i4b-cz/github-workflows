@@ -21,6 +21,7 @@ Centrální repozitář s reusable GitHub workflows pro projekty firmy i4b.cz.
 | [`claude-code.yml`](#claude-codeyml) | Claude Code integration (@claude trigger) |
 | [`claude-code-review.yml`](#claude-code-reviewyml) | Automatické PR code review |
 | [`deploy-ssh.yml`](#deploy-sshyml) | SSH deploy via rsync s backup podporou |
+| [`release-pr.yml`](#release-pryml) | Release PR z develop do main se seznamem změn |
 
 ---
 
@@ -323,6 +324,64 @@ Nastavte v GitHub environment (Settings → Environments):
 
 > **Poznámka:** Tyto proměnné NEMAJÍ prefix `ENV_` - jsou určeny pouze pro CI workflow,
 > ne pro runtime aplikace.
+
+---
+
+## release-pr.yml
+
+Při pushi do `develop` založí (nebo aktualizuje) release PR do `main`. Tělo PR se
+**pokaždé přegeneruje** — ruční úpravy textu se ztratí. Trvalé poznámky patří do
+komentářů PR nebo do labelů issue, ty přegenerování přežijí.
+
+### Použití
+
+```yaml
+name: Create Release PR
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  release-pr:
+    uses: i4b-cz/github-workflows/.github/workflows/release-pr.yml@main
+    with:
+      base-branch: main
+      head-branch: develop
+      staging-url: https://staging.example.cz
+```
+
+### Inputs
+
+| Input | Required | Default | Popis |
+|-------|----------|---------|-------|
+| `base-branch` | ne | `main` | Cílová větev release |
+| `head-branch` | ne | `develop` | Zdrojová větev |
+| `staging-url` | ne | `''` | Odkaz na staging do release notes |
+| `version-prefix` | ne | `''` | Prefix verze (např. `v` pro `v2026.8.1`) |
+
+Verze se počítá jako CalVer `YYYY.M.PATCH` z existujících tagů.
+
+### Ruční kroky po nasazení
+
+Issues navázané na release se vypíšou i s labely. Když issue nese label
+**`deploy: ruční krok`** (nebo `manual-step` / `deploy-action`), přidá se navíc
+sekce `⚠️ Manual steps required after deploy` **na začátek** release PR.
+
+K čemu to je: samotné nasazení kódu občas nestačí — je potřeba doběhnout migraci
+dat, spustit backfill command a podobně. Zapadlé na konci dlouhého release PR se
+to přehlédne a release je nasazený jen napůl.
+
+Workflow nemá jak vědět, co přesně se má spustit, takže sekce jen vypíše dotčené
+issues. **Konkrétní příkaz napiš do komentáře release PR** — komentáře se
+přegenerováním těla neztratí.
+
+Sekce se objeví jen když nějaké issue ten label má; jinak se release notes nemění.
 
 ---
 
