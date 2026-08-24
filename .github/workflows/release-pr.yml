@@ -94,43 +94,69 @@ jobs:
           # Get unique issue numbers
           sort -u /tmp/issue_numbers.txt > /tmp/unique_issues.txt
 
+          # Render the issue list once, collecting issues that need a manual step
+          # after deploy into a separate list. Both files are consumed below.
+          > /tmp/issues_section.md
+          > /tmp/manual_steps.md
+
+          if [ -s /tmp/unique_issues.txt ]; then
+            while read -r ISSUE_NUM; do
+              [ -z "$ISSUE_NUM" ] && continue
+              # Get issue details via GitHub API
+              ISSUE_DATA=$(gh issue view "$ISSUE_NUM" --json title,state,labels 2>/dev/null || echo "")
+
+              if [ -n "$ISSUE_DATA" ]; then
+                TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
+                STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
+                LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+
+                # Determine status indicator
+                if echo "$LABELS" | grep -qi "ready.for.release\|ready-for-release\|ready to release"; then
+                  STATUS="✅"
+                elif echo "$LABELS" | grep -qi "staging"; then
+                  STATUS="🔄"
+                elif [ "$STATE" = "CLOSED" ]; then
+                  STATUS="✅"
+                else
+                  STATUS="🔄"
+                fi
+
+                # Format labels for display
+                if [ -n "$LABELS" ]; then
+                  LABEL_DISPLAY=" \`$LABELS\`"
+                else
+                  LABEL_DISPLAY=""
+                fi
+
+                echo "- ${STATUS} #${ISSUE_NUM} ${TITLE}${LABEL_DISPLAY}" >> /tmp/issues_section.md
+
+                # Deploying the code is not enough for these — a human has to run
+                # something afterwards. Accepts the Czech and English label spellings.
+                if echo "$LABELS" | grep -qiE 'deploy: ?ruční krok|deploy: ?rucni krok|manual[ -]step|deploy[ -]action'; then
+                  echo "- #${ISSUE_NUM} ${TITLE}" >> /tmp/manual_steps.md
+                fi
+              fi
+            done < /tmp/unique_issues.txt
+          fi
+
           # Build release notes
           {
+            # Manual steps go first — buried at the bottom they get missed,
+            # and missing one means the release is only half deployed.
+            if [ -s /tmp/manual_steps.md ]; then
+              echo "## ⚠️ Manual steps required after deploy"
+              echo ""
+              echo "Deploying is not enough for these. See the issue and its release PR comments for the exact commands:"
+              echo ""
+              cat /tmp/manual_steps.md
+              echo ""
+            fi
+
             echo "## Issues in this release"
             echo ""
 
-            if [ -s /tmp/unique_issues.txt ]; then
-              while read -r ISSUE_NUM; do
-                [ -z "$ISSUE_NUM" ] && continue
-                # Get issue details via GitHub API
-                ISSUE_DATA=$(gh issue view "$ISSUE_NUM" --json title,state,labels 2>/dev/null || echo "")
-
-                if [ -n "$ISSUE_DATA" ]; then
-                  TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
-                  STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
-                  LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-
-                  # Determine status indicator
-                  if echo "$LABELS" | grep -qi "ready.for.release\|ready-for-release\|ready to release"; then
-                    STATUS="✅"
-                  elif echo "$LABELS" | grep -qi "staging"; then
-                    STATUS="🔄"
-                  elif [ "$STATE" = "CLOSED" ]; then
-                    STATUS="✅"
-                  else
-                    STATUS="🔄"
-                  fi
-
-                  # Format labels for display
-                  if [ -n "$LABELS" ]; then
-                    LABEL_DISPLAY=" \`$LABELS\`"
-                  else
-                    LABEL_DISPLAY=""
-                  fi
-
-                  echo "- ${STATUS} #${ISSUE_NUM} ${TITLE}${LABEL_DISPLAY}"
-                fi
-              done < /tmp/unique_issues.txt
+            if [ -s /tmp/issues_section.md ]; then
+              cat /tmp/issues_section.md
             else
               echo "*No linked issues found in PRs*"
             fi
