@@ -11,6 +11,14 @@ on:
         description: 'Branch to check out and to base new Claude branches on (empty = repository default branch)'
         type: string
         default: ''
+      model:
+        description: 'Claude model (e.g. claude-opus-5); empty = Claude Code default'
+        type: string
+        default: ''
+      effort:
+        description: 'Effort level: low | medium | high | xhigh | max; empty = Claude Code default'
+        type: string
+        default: ''
 
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -54,4 +62,7 @@ jobs:
           base_branch: ${{ inputs.base-branch }}
           additional_permissions: |
             actions: read
-          claude_args: ${{ inputs.allowed-tools }}
+          claude_args: >-
+            ${{ inputs.model && format('--model {0}', inputs.model) || '' }}
+            ${{ inputs.effort && format('--effort {0}', inputs.effort) || '' }}
+            ${{ inputs.allowed-tools }}

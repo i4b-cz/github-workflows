@@ -137,8 +137,10 @@ jobs:
 
 | Input | Type | Default | Popis |
 |-------|------|---------|-------|
-| `allowed-tools` | string | `''` | Omezení povolených nástrojů |
-| `model` | string | `''` | Claude model |
+| `allowed-tools` | string | `''` | Omezení povolených nástrojů (formát `claude_args`) |
+| `base-branch` | string | `''` | Branch pro checkout a základ nových Claude branchí (prázdné = default branch) |
+| `model` | string | `''` | Claude model, např. `claude-opus-5` (prázdné = default Claude Code) |
+| `effort` | string | `''` | Effort: `low` / `medium` / `high` / `xhigh` / `max` (prázdné = default Claude Code) |
 
 ### Secrets
 
@@ -175,7 +177,8 @@ jobs:
 |-------|------|---------|-------|
 | `skip-title-keyword` | string | `'[skip-review]'` | Keyword pro skip |
 | `review-prompt` | string | `''` | Custom prompt |
-| `model` | string | `''` | Claude model |
+| `model` | string | `''` | Claude model, např. `claude-opus-5` (prázdné = default Claude Code) |
+| `effort` | string | `''` | Effort: `low` / `medium` / `high` / `xhigh` / `max` (prázdné = default Claude Code) |
 
 ### Secrets
 

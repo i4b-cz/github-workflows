@@ -11,6 +11,14 @@ on:
         description: 'Custom review prompt (uses default if empty)'
         type: string
         default: ''
+      model:
+        description: 'Claude model (e.g. claude-opus-5); empty = Claude Code default'
+        type: string
+        default: ''
+      effort:
+        description: 'Effort level: low | medium | high | xhigh | max; empty = Claude Code default'
+        type: string
+        default: ''
 
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -78,6 +86,9 @@ jobs:
 
             Use `gh pr comment $GITHUB_EVENT_PULL_REQUEST_NUMBER --body "YOUR_REVIEW_HERE"` to post your review.' }}
 
-          claude_args: '--allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh search:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*)"'
+          claude_args: >-
+            ${{ inputs.model && format('--model {0}', inputs.model) || '' }}
+            ${{ inputs.effort && format('--effort {0}', inputs.effort) || '' }}
+            --allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh search:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*)"
         env:
           GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
