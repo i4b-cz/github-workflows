@@ -103,6 +103,21 @@ jobs:
             php bin/console cache:warmup --env=dev
           fi
 
+      # PHPStan's result cache lives in its tmpDir (sys_get_temp_dir()/phpstan,
+      # i.e. /tmp/phpstan on the runner, unless the project sets tmpDir) and
+      # lets it re-analyse only what changed instead of the whole project. The
+      # key carries the sha so every run saves a fresh cache and restore-keys
+      # pick the newest one. Stale entries are PHPStan's problem, not ours: its
+      # config, composer.lock and (with phpstan-symfony) the container XML are
+      # part of the cache meta. A project with its own tmpDir gets a no-op.
+      - name: Cache PHPStan result cache
+        if: inputs.run-phpstan
+        uses: actions/cache@v4
+        with:
+          path: /tmp/phpstan
+          key: ${{ runner.os }}-phpstan-${{ inputs.working-directory }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-phpstan-${{ inputs.working-directory }}-
+
       - name: Run PHPStan
         id: phpstan
         if: inputs.run-phpstan
