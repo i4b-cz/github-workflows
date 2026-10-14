@@ -82,17 +82,45 @@ jobs:
           # Matches both "Merge pull request #123" and "feat: Something (#123)"
           echo "$COMMITS" | grep -oE '#[0-9]+' | tr -d '#' | sort -u > /tmp/pr_numbers.txt
 
-          # Collect linked issues from PRs
-          > /tmp/issue_numbers.txt
-          while read -r PR_NUM; do
-            [ -z "$PR_NUM" ] && continue
-            # Get PR body and extract linked issues (Fixes #XX, Closes #XX, Resolves #XX)
-            PR_BODY=$(gh pr view "$PR_NUM" --json body --jq '.body // ""' 2>/dev/null || echo "")
-            echo "$PR_BODY" | grep -oiE '(fixes|closes|resolves|fix|close|resolve)\s*#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' >> /tmp/issue_numbers.txt
-          done < /tmp/pr_numbers.txt
+          # Looks up the numbers listed in $1 with one GraphQL query per 50
+          # numbers and writes {"<number>": {fields of $2}} to $3. A number that
+          # does not exist or is not of the type $2 asks for is left out.
+          #
+          # This step used to call `gh pr view` twice per PR and `gh issue view`
+          # once per issue, one after another. At ~0.4 s a call, a release of
+          # 150 PRs kept the job running for 2–3 minutes on every push to the
+          # head branch, for work that takes seconds.
+          fetch_items() {
+            echo '{}' > "$3"
+            rm -f /tmp/chunk_*
+            split -l 50 "$1" /tmp/chunk_
+            for CHUNK in /tmp/chunk_*; do
+              [ -e "$CHUNK" ] || continue
+              ALIASES=""
+              for NUM in $(cat "$CHUNK"); do
+                ALIASES="$ALIASES n$NUM: issueOrPullRequest(number: $NUM) { $2 }"
+              done
+              # A missing number makes gh exit non-zero, but the response still
+              # carries the data for the others.
+              gh api graphql \
+                -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" \
+                -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) { $ALIASES } }" \
+                > /tmp/chunk.json 2>/dev/null || true
+              jq -s '.[0] + ((.[1].data.repository // {})
+                | with_entries(select(.value != null and .value != {}) | .key |= ltrimstr("n")))' \
+                "$3" /tmp/chunk.json > /tmp/items.json
+              mv /tmp/items.json "$3"
+            done
+          }
 
-          # Get unique issue numbers
-          sort -u /tmp/issue_numbers.txt > /tmp/unique_issues.txt
+          fetch_items /tmp/pr_numbers.txt '... on PullRequest { title body }' /tmp/prs.json
+
+          # Collect linked issues from PR bodies (Fixes #XX, Closes #XX, Resolves #XX)
+          jq -r '.[].body // ""' /tmp/prs.json \
+            | { grep -oiE '(fixes|closes|resolves|fix|close|resolve)\s*#[0-9]+' || true; } \
+            | grep -oE '#[0-9]+' | tr -d '#' | sort -u > /tmp/unique_issues.txt || true
+
+          fetch_items /tmp/unique_issues.txt '... on Issue { title state labels(first: 100) { nodes { name } } }' /tmp/issues.json
 
           # Render the issue list once, collecting issues that need a manual step
           # after deploy into a separate list. Both files are consumed below.
@@ -102,13 +130,12 @@ jobs:
           if [ -s /tmp/unique_issues.txt ]; then
             while read -r ISSUE_NUM; do
               [ -z "$ISSUE_NUM" ] && continue
-              # Get issue details via GitHub API
-              ISSUE_DATA=$(gh issue view "$ISSUE_NUM" --json title,state,labels 2>/dev/null || echo "")
+              ISSUE_DATA=$(jq -c --arg n "$ISSUE_NUM" '.[$n] // empty' /tmp/issues.json)
 
               if [ -n "$ISSUE_DATA" ]; then
                 TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
                 STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
-                LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+                LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels.nodes[].name' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
                 # Determine status indicator
                 if echo "$LABELS" | grep -qi "ready.for.release\|ready-for-release\|ready to release"; then
@@ -167,7 +194,8 @@ jobs:
             echo ""
             while read -r PR_NUM; do
               [ -z "$PR_NUM" ] && continue
-              PR_TITLE=$(gh pr view "$PR_NUM" --json title --jq '.title' 2>/dev/null || echo "PR #$PR_NUM")
+              PR_TITLE=$(jq -r --arg n "$PR_NUM" '.[$n].title // empty' /tmp/prs.json)
+              [ -z "$PR_TITLE" ] && PR_TITLE="PR #$PR_NUM"
               echo "- #${PR_NUM} ${PR_TITLE}"
             done < /tmp/pr_numbers.txt
             echo ""
