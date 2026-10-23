@@ -16,6 +16,24 @@ on:
         type: string
         required: false
         default: ''
+      # Deploy target overrides — let one environment serve several apps on
+      # the same server (e.g. a monorepo of static sites). Empty = use the
+      # environment's REMOTE_PATH / SSH_USER / APP_URL variables.
+      remote-path:
+        description: 'Remote path on the server (overrides vars.REMOTE_PATH)'
+        type: string
+        required: false
+        default: ''
+      ssh-user:
+        description: 'SSH user (overrides vars.SSH_USER)'
+        type: string
+        required: false
+        default: ''
+      app-url:
+        description: 'Application URL for the health check (overrides vars.APP_URL)'
+        type: string
+        required: false
+        default: ''
       deploy-config:
         description: 'JSON configuration for deployment'
         type: string
@@ -364,9 +382,9 @@ jobs:
         if: steps.config.outputs.backup-enabled == 'true'
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
-          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_USER: ${{ inputs.ssh-user || vars.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT }}
-          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          REMOTE_PATH: ${{ inputs.remote-path || vars.REMOTE_PATH }}
           BACKUP_DATABASE: ${{ steps.config.outputs.backup-database }}
         run: |
           echo "→ Creating backup..."
@@ -410,9 +428,9 @@ jobs:
         if: steps.config.outputs.frontends-enabled == 'true'
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
-          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_USER: ${{ inputs.ssh-user || vars.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT }}
-          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          REMOTE_PATH: ${{ inputs.remote-path || vars.REMOTE_PATH }}
         run: |
           FRONTEND_COUNT=$(jq 'length' /tmp/frontends.json)
           for i in $(seq 0 $((FRONTEND_COUNT - 1))); do
@@ -444,9 +462,9 @@ jobs:
         if: steps.config.outputs.backend-enabled == 'true'
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
-          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_USER: ${{ inputs.ssh-user || vars.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT }}
-          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          REMOTE_PATH: ${{ inputs.remote-path || vars.REMOTE_PATH }}
           BACKEND_PATH: ${{ steps.config.outputs.backend-path }}
         run: |
           # Build rsync exclude arguments safely using array
@@ -514,9 +532,9 @@ jobs:
         if: steps.config.outputs.backend-enabled == 'true'
         env:
           SSH_HOST: ${{ vars.SSH_HOST }}
-          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_USER: ${{ inputs.ssh-user || vars.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT }}
-          REMOTE_PATH: ${{ vars.REMOTE_PATH }}
+          REMOTE_PATH: ${{ inputs.remote-path || vars.REMOTE_PATH }}
           DO_COMPOSER: ${{ steps.config.outputs.postdeploy-composer }}
           DO_MIGRATIONS: ${{ steps.config.outputs.postdeploy-migrations }}
           DO_CACHE: ${{ steps.config.outputs.postdeploy-cache }}
@@ -572,7 +590,7 @@ jobs:
       - name: Health check
         if: steps.config.outputs.healthcheck-enabled == 'true'
         env:
-          APP_URL: ${{ vars.APP_URL }}
+          APP_URL: ${{ inputs.app-url || vars.APP_URL }}
           HEALTH_URL: ${{ steps.config.outputs.healthcheck-url }}
           VERIFY_PRODUCTION: ${{ steps.config.outputs.healthcheck-verify-production }}
         run: |
@@ -637,7 +655,7 @@ jobs:
             echo "✓ DEPLOYMENT SUCCESSFUL"
             echo "================================================"
             echo "Environment: ${{ inputs.environment }}"
-            echo "URL: ${{ vars.APP_URL }}"
+            echo "URL: ${{ inputs.app-url || vars.APP_URL }}"
           else
             echo "✗ DEPLOYMENT FAILED"
             echo "Environment: ${{ inputs.environment }}"
