@@ -224,6 +224,14 @@ jobs:
 | `environment` | string | required | GitHub environment |
 | `node-version` | string | `'20'` | Node.js verze |
 | `deploy-config` | string | required | JSON konfigurace |
+| `ref` | string | `''` | Git ref pro checkout (výchozí: ref, který workflow spustil) |
+| `remote-path` | string | `''` | Cesta na serveru — přepíše `vars.REMOTE_PATH` |
+| `ssh-user` | string | `''` | SSH uživatel — přepíše `vars.SSH_USER` |
+| `app-url` | string | `''` | URL pro health check — přepíše `vars.APP_URL` |
+
+`remote-path`, `ssh-user` a `app-url` umožní jednomu environmentu obsloužit víc
+aplikací na stejném serveru (např. monorepo statických webů): sdílené `SSH_HOST`,
+`SSH_PORT` a `SSH_KEY` zůstanou v environmentu nebo repu, cíl deploye předá volající.
 
 ### Deploy Config JSON
 
@@ -320,10 +328,10 @@ Nastavte v GitHub environment (Settings → Environments):
 | Proměnná | Popis |
 |----------|-------|
 | `SSH_HOST` | SSH server hostname |
-| `SSH_USER` | SSH username |
+| `SSH_USER` | SSH username (lze přepsat inputem `ssh-user`) |
 | `SSH_PORT` | SSH port (default 22) |
-| `REMOTE_PATH` | Cesta na serveru |
-| `APP_URL` | URL aplikace (pro health check) |
+| `REMOTE_PATH` | Cesta na serveru (lze přepsat inputem `remote-path`) |
+| `APP_URL` | URL aplikace pro health check (lze přepsat inputem `app-url`) |
 
 > **Poznámka:** Tyto proměnné NEMAJÍ prefix `ENV_` - jsou určeny pouze pro CI workflow,
 > ne pro runtime aplikace.
