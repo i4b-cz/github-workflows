@@ -432,12 +432,25 @@ jobs:
           SSH_PORT: ${{ vars.SSH_PORT }}
           REMOTE_PATH: ${{ inputs.remote-path || vars.REMOTE_PATH }}
         run: |
+          # Each frontend goes up in three passes so a browser never gets an
+          # index.html that points at files not on the server yet:
+          #   1. new assets (everything but *.html), nothing deleted;
+          #   2. the *.html entry points, which now reference uploaded assets;
+          #   3. --delete, removing what the new build no longer has.
+          # A single `rsync --delete` used to swap index.html before its assets
+          # arrived; the browser cached the 404 for the missing bundle and showed
+          # a blank app until the cache expired.
+          # A frontend deployed inside another one's target (e.g. admin/ inside
+          # public/) is protected from the outer frontend's --delete.
+          norm() { local p="${1#./}"; echo "${p%/}/"; }
+
           FRONTEND_COUNT=$(jq 'length' /tmp/frontends.json)
           for i in $(seq 0 $((FRONTEND_COUNT - 1))); do
             frontend=$(jq -c ".[$i]" /tmp/frontends.json)
             FPATH=$(echo "$frontend" | jq -r '.path')
             FNAME=$(echo "$frontend" | jq -r '.name // "default"')
             DEPLOY_TO=$(echo "$frontend" | jq -r '.["deploy-to"] // "backend/public/"')
+            TARGET="$SSH_USER@$SSH_HOST:$REMOTE_PATH/$DEPLOY_TO"
 
             echo "→ Deploying frontend: $FNAME → $DEPLOY_TO"
 
@@ -449,11 +462,32 @@ jobs:
               fi
             done < <(echo "$frontend" | jq -r '.["rsync-exclude"] // [] | .[]')
 
-            rsync -avz --delete --mkpath \
-              -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT" \
-              "${FRONTEND_EXCLUDE_ARGS[@]}" \
-              "$FPATH/dist/" \
-              "$SSH_USER@$SSH_HOST:$REMOTE_PATH/$DEPLOY_TO"
+            # Protect other frontends nested in this target from --delete
+            OWN=$(norm "$DEPLOY_TO")
+            for j in $(seq 0 $((FRONTEND_COUNT - 1))); do
+              [ "$j" -eq "$i" ] && continue
+              OTHER=$(norm "$(jq -r ".[$j][\"deploy-to\"] // \"backend/public/\"" /tmp/frontends.json)")
+              if [ "$OTHER" != "$OWN" ] && [ "${OTHER#"$OWN"}" != "$OTHER" ]; then
+                NESTED="${OTHER#"$OWN"}"
+                echo "  protecting nested frontend /$NESTED"
+                FRONTEND_EXCLUDE_ARGS+=("--exclude=/$NESTED")
+              fi
+            done
+
+            RSYNC=(rsync -az --mkpath -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT")
+
+            echo "  1/3 assets"
+            "${RSYNC[@]}" "${FRONTEND_EXCLUDE_ARGS[@]}" --exclude='*.html' \
+              "$FPATH/dist/" "$TARGET"
+
+            echo "  2/3 html entry points"
+            "${RSYNC[@]}" "${FRONTEND_EXCLUDE_ARGS[@]}" -m \
+              --include='*/' --include='*.html' --exclude='*' \
+              "$FPATH/dist/" "$TARGET"
+
+            echo "  3/3 remove stale files"
+            "${RSYNC[@]}" --delete --itemize-changes "${FRONTEND_EXCLUDE_ARGS[@]}" \
+              "$FPATH/dist/" "$TARGET"
 
             echo "✓ Frontend $FNAME deployed"
           done
